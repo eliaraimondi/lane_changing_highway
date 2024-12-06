@@ -12,6 +12,7 @@ from dg_commons.sim.models.obstacles import StaticObstacle
 from dg_commons.sim.models.vehicle import VehicleCommands, VehicleModel, VehicleState
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
+from .algo import calculate_dubins_path
 
 
 @dataclass(frozen=True)
@@ -68,5 +69,4 @@ class Pdm4arAgent(Agent):
 
         print(f"Current state: {sim_obs.players[self.name].state}")
         print(f"Next state: {X_k1}")
-
         return VehicleCommands(acc=rnd_acc, ddelta=rnd_ddelta)
