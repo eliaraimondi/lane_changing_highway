@@ -4,8 +4,8 @@ from shapely.geometry import Point
 def collision_checking(
     my_positions: list[tuple[float, float]],
     other_positions: list[tuple[float, float]],
-    my_radius: int,
-    other_radius: int,
+    my_radius: float,
+    other_radius: float,
 ) -> list[int]:
     """
     This function checks if our current trajectory is in collision with other agents' trajectories.
