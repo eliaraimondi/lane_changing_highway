@@ -1,6 +1,7 @@
 from pickle import TRUE
 import random
 from dataclasses import dataclass
+from turtle import speed
 from typing import Sequence
 from dg_commons import SE2Transform
 
@@ -10,10 +11,10 @@ from dg_commons.sim.goals import PlanningGoal
 from dg_commons.sim import SimObservations, InitSimObservations
 from dg_commons.sim.agents import Agent
 from dg_commons.sim.models.obstacles import StaticObstacle
-from dg_commons.sim.models.vehicle import VehicleCommands, VehicleModel
+from dg_commons.sim.models.vehicle import VehicleCommands, VehicleModel, VehicleState
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
-from .dubins import calculate_dubins_path, calculate_car_turning_radius, extract_path_points
+from .dubins import calculate_dubins_path, calculate_car_turning_radius
 from .collision_checking import collision_checking
 from .planner import compute_commands
 from dg_commons import SE2Transform
@@ -76,10 +77,11 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
+        current_state = sim_obs.players[self.name].state
+
         # If the trajectory is not started, compute the trajectory
         if not self.trajectory_started:
-            # State at the current time
-            self.current_state = sim_obs.players[self.name].state
+            current_state = sim_obs.players[self.name].state
 
             # COMPUTE SPEEDS AND ACCELERATIONS OF OTHER AGENTS
             # Save speeds of other agents to compuete their accelerations
@@ -134,8 +136,10 @@ class Pdm4arAgent(Agent):
 
             ############################################################################################################
             # TRAJECTORY
+            # Initial state for the dubins
             current_state = sim_obs.players[self.name].state
-            initial_state = SE2Transform([current_state.x, current_state.y], current_state.psi)
+            # Final speed of the car
+            end_speed = current_state.vx
 
             # Check if the goal lane is on the right side of the car
             goal_lane_is_right = self.point_is_right(
@@ -146,18 +150,21 @@ class Pdm4arAgent(Agent):
                 self.control_points[1].q.p[1],
             )
 
-            path = calculate_dubins_path(
-                initial_state, self.radius, goal_lane_is_right, lane_width=(2 * self.control_points[1].r)
+            self.trajectory = calculate_dubins_path(
+                current_state,
+                end_speed,
+                self.radius,
+                goal_lane_is_right,
+                lane_width=(2 * self.control_points[1].r),
+                wheelbase=self.sg.wheelbase,
             )
-            trajectory = extract_path_points(path)
-            self.trajectory_to_plot = [[tr.p[0] for tr in trajectory], [tr.p[1] for tr in trajectory]]
 
-            self._plot_print()
+            # self._plot_print()
 
             ############################################################################################################
             # CHECK IF THE TRAJECTORY OF THE AGENT INTERSECTS WITH THE TRAJECTORIES OF OTHER AGENTS
             # 1. Trasform the trajectory in a list of tuples
-            trajectory_points = [(tr.p[0], tr.p[1]) for tr in trajectory]  # need to use the points every 0.1 seconds
+            """trajectory_points = [(tr.x, tr.y) for tr in self.trajectory]  # need to use the points every 0.1 seconds
             agents_collisions = {}
             # 2. Check if the trajectory intersects with the trajectories of other agents
             for agent_name in other_trajectories:
@@ -171,37 +178,24 @@ class Pdm4arAgent(Agent):
             # If the trajectory don't collide with other agents, compute the commands to follow the trajectory
             if all(not lst for lst in agents_collisions.values()):
                 # Compute the commands to follow the trajectory
-                self.commands_list = compute_commands(
-                    current_state.vx,
-                    current_state.vx,
-                    trajectory,
-                    wheelbase=self.sg.wheelbase,
-                    init_time=float(sim_obs.time),
-                )  # setting the goal speed equal to the current speed
                 self.trajectory_started = True
             else:
                 # If the trajectory collides with other agents, don't give any command
                 commands = VehicleCommands(acc=0, ddelta=0)
-
+            """
+            self.trajectory_started = True
         # If the trajectory is started compute the commands
-        if self.trajectory_started:
-            self.times = sorted(self.commands_list.keys())
-            actual_time = float(sim_obs.time)
+        if self.trajectory_started and list(self.trajectory.keys())[-1] > float(sim_obs.time):
+            commands = self.compute_actual_commands(
+                current_state, self.trajectory[round(float(sim_obs.time) + 0.1, 1)], self.sg.wheelbase
+            )
 
-            for i in range(len(self.times) - 1):
-                t1, t2 = self.times[i], self.times[i + 1]
-                if t1 <= actual_time <= t2:
-                    # Interpolazione lineare
-                    a1, a2 = self.commands_list[t1].acc, self.commands_list[t2].acc
-                    acc = a1 + (a2 - a1) * (actual_time - t1) / (t2 - t1)
-                    d1, d2 = self.commands_list[t1].ddelta, self.commands_list[t2].ddelta
-                    ddelta = d1 + (d2 - d1) * (actual_time - t1) / (t2 - t1)
-                    commands = VehicleCommands(acc=acc, ddelta=ddelta)
-                    break
-
-        if self.trajectory_started and self.times[-1] < sim_obs.time:
+        if self.trajectory_started and list(self.trajectory.keys())[-1] <= float(sim_obs.time):
             commands = VehicleCommands(acc=0, ddelta=0)
-
+        """error = np.linalg.norm(
+            current_state.as_ndarray() - self.trajectory[round(float(sim_obs.time) + 0.1, 1)].as_ndarray()
+        )
+        print(f"error {error}")"""
         return commands
 
     def point_is_right(self, xQ, yQ, psi, xP, yP):
@@ -218,6 +212,19 @@ class Pdm4arAgent(Agent):
 
     def _plot_print(self):
         plt.figure()
-        plt.plot(self.trajectory_to_plot[0], self.trajectory_to_plot[1])
+        # plt.plot(self.trajectory_to_plot[0], self.trajectory_to_plot[1])
         plt.axis("equal")
         plt.savefig("traiettoria.png")
+
+    def compute_actual_commands(self, current_state, desired_state, wheelbase: float) -> VehicleCommands:
+        """
+        This method is called by the simulator to compute the actual commands to be executed
+        """
+        # Compute the actual acceleration
+        dt = 0.1
+        acc = (desired_state.vx - current_state.vx) / dt
+
+        # Compute the actual ddelta
+        ddelta = (desired_state.delta - current_state.delta) / dt
+
+        return VehicleCommands(acc=acc, ddelta=ddelta)
