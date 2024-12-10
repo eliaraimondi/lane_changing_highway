@@ -52,9 +52,9 @@ class Pdm4arAgent(Agent):
         self.goal = init_obs.goal
         self.sg = init_obs.model_geometry
         self.sp = init_obs.model_params
-        self.min_turning_radius = calculate_car_turning_radius(
-            self.sg.lr + self.sg.lf, self.sp.delta_max
-        ).min_radius  # calculate the minimum turning radius of the car
+        self.radius = (
+            calculate_car_turning_radius(self.sg.lr + self.sg.lf, self.sp.delta_max).min_radius * 10
+        )  # calculate the minimum turning radius of the car
 
         # Create a dictionary to store the speeds of other agents
         self.old_other_speeds = {}
@@ -147,7 +147,7 @@ class Pdm4arAgent(Agent):
             )
 
             path = calculate_dubins_path(
-                initial_state, self.min_turning_radius, goal_lane_is_right, lane_width=(2 * self.control_points[1].r)
+                initial_state, self.radius, goal_lane_is_right, lane_width=(2 * self.control_points[1].r)
             )
             trajectory = extract_path_points(path)
             self.trajectory_to_plot = [[tr.p[0] for tr in trajectory], [tr.p[1] for tr in trajectory]]
@@ -171,8 +171,12 @@ class Pdm4arAgent(Agent):
             # If the trajectory don't collide with other agents, compute the commands to follow the trajectory
             if all(not lst for lst in agents_collisions.values()):
                 # Compute the commands to follow the trajectory
-                commands = compute_commands(
-                    current_state.vx, current_state.vx, trajectory, wheelbase=self.sg.wheelbase
+                self.commands_list = compute_commands(
+                    current_state.vx,
+                    current_state.vx,
+                    trajectory,
+                    wheelbase=self.sg.wheelbase,
+                    init_time=float(sim_obs.time),
                 )  # setting the goal speed equal to the current speed
                 self.trajectory_started = True
             else:
@@ -181,18 +185,22 @@ class Pdm4arAgent(Agent):
 
         # If the trajectory is started compute the commands
         if self.trajectory_started:
-            times = sorted(commands.keys())
+            self.times = sorted(self.commands_list.keys())
+            actual_time = float(sim_obs.time)
 
-            for i in range(len(times) - 1):
-                t1, t2 = times[i], times[i + 1]
-                if t1 <= sim_obs.time <= t2:
+            for i in range(len(self.times) - 1):
+                t1, t2 = self.times[i], self.times[i + 1]
+                if t1 <= actual_time <= t2:
                     # Interpolazione lineare
-                    a1, a2 = commands[t1].acc, commands[t2].acc
-                    acc = a1 + (a2 - a1) * (sim_obs.time - t1) / (t2 - t1)
-                    d1, d2 = commands[t1].ddelta, commands[t2].ddelta
-                    ddelta = d1 + (d2 - d1) * (sim_obs.time - t1) / (t2 - t1)
+                    a1, a2 = self.commands_list[t1].acc, self.commands_list[t2].acc
+                    acc = a1 + (a2 - a1) * (actual_time - t1) / (t2 - t1)
+                    d1, d2 = self.commands_list[t1].ddelta, self.commands_list[t2].ddelta
+                    ddelta = d1 + (d2 - d1) * (actual_time - t1) / (t2 - t1)
                     commands = VehicleCommands(acc=acc, ddelta=ddelta)
                     break
+
+        if self.trajectory_started and self.times[-1] < sim_obs.time:
+            commands = VehicleCommands(acc=0, ddelta=0)
 
         return commands
 

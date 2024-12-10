@@ -52,16 +52,20 @@ def calculate_dubins_path(
     end_config_x = start_config.p[0] + 2 * (
         half_point_distance * np.cos(start_config.theta) + lane_width / 2 * np.cos(start_config.theta + np.pi / 2)
     )
-    end_config_y = start_config.p[1] + 2 * (
-        half_point_distance * np.sin(start_config.theta) + lane_width / 2 * np.sin(start_config.theta + np.pi / 2)
-    )
-    end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
 
-    if goal_lane_is_right:
+    if not goal_lane_is_right:
         # Compute path from the current lane to the right lane
+        end_config_y = start_config.p[1] + 2 * (
+            half_point_distance * np.sin(start_config.theta) + lane_width / 2 * np.sin(start_config.theta + np.pi / 2)
+        )
+        end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
         path = LR_path(start_config, end_config, radius)
     else:
         # Compute path from the current lane to the left lane
+        end_config_y = start_config.p[1] - 2 * (
+            half_point_distance * np.sin(start_config.theta) + lane_width / 2 * np.sin(start_config.theta + np.pi / 2)
+        )
+        end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
         path = RL_path(start_config, end_config, radius)
 
     path = Path(path)
@@ -74,10 +78,10 @@ def LR_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
     end_circle = calculate_turning_circles(end_config, radius).right
 
     # Compute the middle point of the curves
-    middle_point_x = (start_circle.center.p[0] + end_circle.center.p[0]) / 2
-    middle_point_y = (start_circle.center.p[1] + end_circle.center.p[1]) / 2
+    middle_point_x = (start_config.p[0] + end_config.p[0]) / 2
+    middle_point_y = (start_config.p[1] + end_config.p[1]) / 2
     theta = tan_computation(
-        end_circle.center.p[0] - start_circle.center.p[0], end_circle.center.p[1] - start_circle.center.p[1]
+        start_circle.center.p[1] - end_circle.center.p[1], end_circle.center.p[0] - start_circle.center.p[0]
     )
     middle_point = SE2Transform([middle_point_x, middle_point_y], theta)
 
@@ -99,10 +103,10 @@ def RL_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
     end_circle = calculate_turning_circles(end_config, radius).left
 
     # Compute the middle point of the curves
-    middle_point_x = (start_circle.center.p[0] + end_circle.center.p[0]) / 2
-    middle_point_y = (start_circle.center.p[1] + end_circle.center.p[1]) / 2
+    middle_point_x = (start_config.p[0] + end_config.p[0]) / 2
+    middle_point_y = (start_config.p[1] + end_config.p[1]) / 2
     theta = tan_computation(
-        end_circle.center.p[0] - start_circle.center.p[0], end_circle.center.p[1] - start_circle.center.p[1]
+        start_circle.center.p[1] - end_circle.center.p[1], end_circle.center.p[0] - start_circle.center.p[0]
     )
     middle_point = SE2Transform([middle_point_x, middle_point_y], theta)
 
