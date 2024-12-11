@@ -24,7 +24,7 @@ import math
 
 @dataclass(frozen=True)
 class Pdm4arAgentParams:
-    numb_of_steps: int = 41  # number of points for the trajectory (equal to number of points of our trajectory)
+    a = 0  # number of points for the trajectory (equal to number of points of our trajectory)
 
 
 class Pdm4arAgent(Agent):
@@ -44,6 +44,8 @@ class Pdm4arAgent(Agent):
     def __init__(self):
         # feel free to remove/modify  the following
         self.params = Pdm4arAgentParams()
+        self.cars_on_same_lanelet = {}  # Name: PlayersObservations: state, occupancy
+        self.cars_on_goal_lanelet = {}  # ""
 
     def on_episode_init(self, init_obs: InitSimObservations):
         """This method is called by the simulator only at the beginning of each simulation.
@@ -53,7 +55,7 @@ class Pdm4arAgent(Agent):
         self.sg = init_obs.model_geometry
         self.sp = init_obs.model_params
         self.radius = (
-            calculate_car_turning_radius(self.sg.lr + self.sg.lf, self.sp.delta_max).min_radius * 10
+            calculate_car_turning_radius(self.sg.lr + self.sg.lf, self.sp.delta_max).min_radius * 20
         )  # calculate the minimum turning radius of the car
 
         # Create a dictionary to store the speeds of other agents
@@ -67,6 +69,10 @@ class Pdm4arAgent(Agent):
 
         self.trajectory_started = False
 
+        self.goal_ID = self.lanelet_network.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
+        self.orientation = self.goal.ref_lane.control_points[0].q.theta
+        self.scenario = init_obs.dg_scenario.lanelet_network
+
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
         Do not modify the signature of this method.
@@ -78,12 +84,93 @@ class Pdm4arAgent(Agent):
         """
         current_state = sim_obs.players[self.name].state
 
+        my_position = [np.array([current_state.x, current_state.y])]
+        my_lanelet = self.scenario.find_lanelet_by_position(my_position)[0][0]
+
+        ### Update neighborhood ###
+        self.cars_on_same_lanelet.clear()
+        self.cars_on_goal_lanelet.clear()
+        front_on_same, front_on_goal = None, None  # PlayersObservations: state, occupancy
+        rear_on_same, rear_on_goal = None, None
+
+        for cars in sim_obs.players:
+            if cars == self.name:
+                continue
+            car = sim_obs.players[cars]
+            car_position = [np.array([car.state.x, car.state.y])]
+            car_lanelet = self.scenario.find_lanelet_by_position(car_position)[0][0]
+            if car_lanelet == my_lanelet:  # NOTE: USELESS IF MY_LANELET IS THE GOAL LANELET
+                self.cars_on_same_lanelet[cars] = car
+                if car.state.x > current_state.x and (
+                    self.orientation < np.pi / 2 or self.orientation > 3 * np.pi / 2
+                ):  # from sx to dx (NOTE: NO vertical lane because check on x-coordinates)
+                    front_on_same = (
+                        car if front_on_same is None or car.state.x < front_on_same.state.x else front_on_same
+                    )
+                elif car.state.x < current_state.x and (
+                    self.orientation < np.pi / 2 or self.orientation > 3 * np.pi / 2
+                ):
+                    rear_on_same = car if rear_on_same is None or car.state.x > rear_on_same.state.x else rear_on_same
+                continue
+            if car_lanelet == self.goal_ID:
+                self.cars_on_goal_lanelet[cars] = car
+                if car.state.x > current_state.x and (self.orientation < np.pi / 2 or self.orientation > 3 * np.pi / 2):
+                    front_on_goal = (
+                        car if front_on_goal is None or car.state.x < front_on_goal.state.x else front_on_goal
+                    )
+                elif car.state.x < current_state.x and (
+                    self.orientation < np.pi / 2 or self.orientation > 3 * np.pi / 2
+                ):
+                    rear_on_goal = car if rear_on_goal is None or car.state.x > rear_on_goal.state.x else rear_on_goal
+                elif car.state.x < current_state.x and (
+                    self.orientation > np.pi / 2 or self.orientation < 3 * np.pi / 2
+                ):
+                    front_on_goal = (
+                        car if front_on_goal is None or car.state.x > front_on_goal.state.x else front_on_goal
+                    )
+                elif car.state.x > current_state.x and (
+                    self.orientation > np.pi / 2 or self.orientation < 3 * np.pi / 2
+                ):
+                    rear_on_goal = car if rear_on_goal is None or car.state.x < rear_on_goal.state.x else rear_on_goal
+                continue
+
         # If the trajectory is not started, compute the trajectory
         if not self.trajectory_started:
             current_state = sim_obs.players[self.name].state
 
+            ############################################################################################################
+            # TRAJECTORY
+            # Initial state for the dubins
+            current_state = sim_obs.players[self.name].state
+            # Final speed of the car
+            # Final speed of the car
+            end_speed = current_state.vx
+            if front_on_goal is not None:
+                end_speed = front_on_goal.state.vx
+
+            # Check if the goal lane is on the right side of the car
+            goal_lane_is_right = self.point_is_right(
+                current_state.x,
+                current_state.y,
+                current_state.psi,
+                self.control_points[1].q.p[0],
+                self.control_points[1].q.p[1],
+            )
+
+            self.trajectory = calculate_dubins_path(
+                current_state,
+                end_speed,
+                self.radius,
+                goal_lane_is_right,
+                lane_width=(2 * self.control_points[1].r),
+                wheelbase=self.sg.wheelbase,
+            )
+
+            ############################################################################################################
             # COMPUTE SPEEDS AND ACCELERATIONS OF OTHER AGENTS
             # Save speeds of other agents to compuete their accelerations
+            numb_of_steps = len(self.trajectory)
+
             self.other_speeds = {
                 agent_name: sim_obs.players[agent_name].state.vx
                 for agent_name in sim_obs.players
@@ -113,15 +200,15 @@ class Pdm4arAgent(Agent):
                 agent = sim_obs.players[agent_name]
 
                 # If we don't have accelleration of the agent, set it to 0
-                if agent_name not in self.other_accelerations:
-                    self.other_accelerations[agent_name] = 0
+                # if agent_name not in self.other_accelerations:
+                self.other_accelerations[agent_name] = 0
 
                 if agent_name != self.name:
                     # Compute cumulative delta s for each agent every 0.1 seconds
                     # Use the formula for the accelerated motion to compute the cumulative delta s
                     cumulative_delta_s = [
                         agent.state.vx * 0.1 * step + 0.5 * self.other_accelerations[agent_name] * (0.1 * step) ** 2
-                        for step in range(self.params.numb_of_steps)
+                        for step in range(numb_of_steps)
                     ]
 
                     # Decompose the cumulative delta s into x and y components
@@ -130,40 +217,14 @@ class Pdm4arAgent(Agent):
                             cumulative_delta_s[step] * np.cos(agent.state.psi) + agent.state.x,
                             cumulative_delta_s[step] * np.sin(agent.state.psi) + agent.state.y,
                         )
-                        for step in range(self.params.numb_of_steps)
+                        for step in range(numb_of_steps)
                     ]
-
-            ############################################################################################################
-            # TRAJECTORY
-            # Initial state for the dubins
-            current_state = sim_obs.players[self.name].state
-            # Final speed of the car
-            end_speed = current_state.vx
-
-            # Check if the goal lane is on the right side of the car
-            goal_lane_is_right = self.point_is_right(
-                current_state.x,
-                current_state.y,
-                current_state.psi,
-                self.control_points[1].q.p[0],
-                self.control_points[1].q.p[1],
-            )
-
-            self.trajectory = calculate_dubins_path(
-                current_state,
-                end_speed,
-                self.radius,
-                goal_lane_is_right,
-                lane_width=(2 * self.control_points[1].r),
-                wheelbase=self.sg.wheelbase,
-            )
-
-            # self._plot_print()
 
             ############################################################################################################
             # CHECK IF THE TRAJECTORY OF THE AGENT INTERSECTS WITH THE TRAJECTORIES OF OTHER AGENTS
             # 1. Trasform the trajectory in a list of tuples
-            """trajectory_points = [(tr.x, tr.y) for tr in self.trajectory]  # need to use the points every 0.1 seconds
+            states = list(self.trajectory.values())
+            trajectory_points = [(tr.x, tr.y) for tr in states]  # need to use the points every 0.1 seconds
             agents_collisions = {}
             # 2. Check if the trajectory intersects with the trajectories of other agents
             for agent_name in other_trajectories:
@@ -172,28 +233,17 @@ class Pdm4arAgent(Agent):
                     trajectory_points, other_trajectories[agent_name], self.my_radius, agent_radius
                 )
 
-            ############################################################################################################
-            # COMMANDS
-            # If the trajectory don't collide with other agents, compute the commands to follow the trajectory
             if all(not lst for lst in agents_collisions.values()):
-                # Compute the commands to follow the trajectory
                 self.trajectory_started = True
-            else:
-                # If the trajectory collides with other agents, don't give any command
-                commands = VehicleCommands(acc=0, ddelta=0)
-            """
-            self.trajectory_started = True
+
         # If the trajectory is started compute the commands
         ind = round(float(sim_obs.time) + 0.1, 1)
         if self.trajectory_started and list(self.trajectory.keys())[-1] > float(sim_obs.time):
-            commands = self.compute_actual_commands(current_state, self.trajectory[ind], self.sg.wheelbase)
+            commands = self.compute_actual_commands(current_state, self.trajectory[ind])
 
         if self.trajectory_started and list(self.trajectory.keys())[-1] <= float(sim_obs.time):
             commands = VehicleCommands(acc=0, ddelta=0)
-        """error = np.linalg.norm(
-            current_state.as_ndarray() - self.trajectory[round(float(sim_obs.time) + 0.1, 1)].as_ndarray()
-        )
-        print(f"error {error}")"""
+
         return commands
 
     def point_is_right(self, xQ, yQ, psi, xP, yP):
@@ -214,7 +264,7 @@ class Pdm4arAgent(Agent):
         plt.axis("equal")
         plt.savefig("traiettoria.png")
 
-    def compute_actual_commands(self, current_state, desired_state, wheelbase: float) -> VehicleCommands:
+    def compute_actual_commands(self, current_state, desired_state) -> VehicleCommands:
         """
         This method is called by the simulator to compute the actual commands to be executed
         """
