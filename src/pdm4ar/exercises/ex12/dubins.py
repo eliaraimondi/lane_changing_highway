@@ -56,28 +56,29 @@ def calculate_dubins_path(
     goal_lane_is_right: a boolean indicating if the goal lane is on the right side of the car
     lane_width: the width of the lane
     """
-    # Convert the start configuration to SE2Transform
     start_config = SE2Transform([init_config.x, init_config.y], init_config.psi)
     start_speed = init_config.vx
 
     # Compute the end configuration
     half_point_distance = np.sqrt(radius**2 - (radius - lane_width / 2) ** 2)
     end_config_x = start_config.p[0] + 2 * (
-        half_point_distance * np.cos(start_config.theta) + lane_width / 2 * np.cos(start_config.theta + np.pi / 2)
+        half_point_distance * np.cos(start_config.theta) - lane_width / 2 * np.sin(start_config.theta)
     )
 
     if not goal_lane_is_right:
-        # Compute path from the current lane to the right lane
+        # Compute path from the current lane to the left lane
         end_config_y = start_config.p[1] + 2 * (
-            half_point_distance * np.sin(start_config.theta) + lane_width / 2 * np.sin(start_config.theta + np.pi / 2)
+            half_point_distance * np.sin(start_config.theta) + lane_width / 2 * np.cos(start_config.theta)
         )
+
         end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
         path = LR_path(start_config, end_config, radius)
     else:
-        # Compute path from the current lane to the left lane
-        end_config_y = start_config.p[1] - 2 * (
-            half_point_distance * np.sin(start_config.theta) + lane_width / 2 * np.sin(start_config.theta + np.pi / 2)
+        # Compute path from the current lane to the right lane
+        end_config_y = start_config.p[1] + 2 * (
+            half_point_distance * np.sin(start_config.theta) - lane_width / 2 * np.cos(start_config.theta)
         )
+
         end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
         path = RL_path(start_config, end_config, radius)
 
