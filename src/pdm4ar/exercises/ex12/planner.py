@@ -6,6 +6,7 @@ import math
 from dg_commons.sim.models.vehicle import VehicleState
 from .structures import *
 import matplotlib.pyplot as plt
+import copy
 
 
 def compute_commands(current_speed, goal_speed, trajectory, wheelbase: float, init_time: float) -> dict:
@@ -169,12 +170,26 @@ def extract_path_points(path: Path) -> list[SE2Transform]:
     pts_list = []
     num_points_per_segment = 20
     for idx, seg in enumerate(path):
+        # if np.allclose(seg.length, 0):
+        #     continue
         seg.start_config.theta = mod_2_pi(seg.start_config.theta)
         seg.end_config.theta = mod_2_pi(seg.end_config.theta)
-        curve_pts = interpolate_curve_points(seg, num_points_per_segment)
-        pts_list.extend(curve_pts)
+        if seg.type is DubinsSegmentType.STRAIGHT:
+            line_pts = interpolate_line_points(seg, num_points_per_segment)
+            pts_list.extend(line_pts)
+        else:  # Curve
+            curve_pts = interpolate_curve_points(seg, num_points_per_segment)
+            pts_list.extend(curve_pts)
     pts_list.append(path[-1].end_config)
     return pts_list
+
+
+def interpolate_line_points(line: Line, number_of_points: float) -> list[SE2Transform]:
+    start = line.start_config
+    end = line.end_config
+    start_to_end = end.p - start.p
+    intervals = np.linspace(0, 1.0, number_of_points)
+    return [SE2Transform(start.p + i * start_to_end, start.theta) for i in intervals]
 
 
 def interpolate_curve_points(curve: Curve, number_of_points: int) -> list[SE2Transform]:
@@ -204,23 +219,27 @@ def get_next_point_on_curve(curve: Curve, point: SE2Transform, delta_angle: floa
 
 
 def smooth_delta(trajectory: dict) -> dict:
-    new_trajectory = trajectory.copy()
+    new_trajectory = copy.deepcopy(trajectory)
     values = list(trajectory.values())
     error = 0
     max_dif_delta = 0.05
     for i in range(len(values) - 1):
-        if values[i + 1].delta - values[i].delta > max_dif_delta:
-            error += values[i + 1].delta - values[i].delta - max_dif_delta
-            new_trajectory[(i + 1) / 10].delta = values[i].delta + max_dif_delta
-        elif values[i + 1].delta - values[i].delta < -max_dif_delta:
-            error += np.abs(values[i + 1].delta - values[i].delta) - max_dif_delta
-            new_trajectory[(i + 1) / 10].delta = values[i].delta - max_dif_delta
+        if values[i + 1].delta - new_trajectory[i / 10].delta > max_dif_delta and values[i + 1].delta > 0:
+            new_trajectory[(i + 1) / 10].delta = new_trajectory[i / 10].delta + max_dif_delta
+            error += values[i + 1].delta - new_trajectory[(i + 1) / 10].delta
+        elif values[i + 1].delta - new_trajectory[i / 10].delta < -max_dif_delta and values[i + 1].delta < 0:
+            new_trajectory[(i + 1) / 10].delta = new_trajectory[i / 10].delta - max_dif_delta
+            error += np.abs(values[i + 1].delta - new_trajectory[(i + 1) / 10].delta)
         else:
-            additional_error = min(error, (max_dif_delta - np.abs(values[i + 1].delta - values[i].delta)))
+            additional_error = min(error, max_dif_delta)
             if values[i + 1].delta > 0:
-                new_trajectory[(i + 1) / 10].delta = values[i + 1].delta + additional_error
+                new_trajectory[(i + 1) / 10].delta = min(
+                    values[i + 1].delta + additional_error, new_trajectory[i / 10].delta + max_dif_delta
+                )
             else:
-                new_trajectory[(i + 1) / 10].delta = values[i + 1].delta - additional_error
-            error -= additional_error
+                new_trajectory[(i + 1) / 10].delta = max(
+                    values[i + 1].delta - additional_error, new_trajectory[i / 10].delta - max_dif_delta
+                )
+            error -= np.abs(values[i + 1].delta - new_trajectory[(i + 1) / 10].delta)
 
     return new_trajectory

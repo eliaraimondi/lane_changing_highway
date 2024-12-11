@@ -1,3 +1,5 @@
+from re import L
+from typing import final
 from dg_commons import SE2Transform
 import math
 
@@ -109,7 +111,13 @@ def LR_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
     for circle in [start_circle, end_circle]:
         set_circle_angle(circle)
 
-    return [start_circle, end_circle]
+    end_point = [
+        end_circle.end_config.p[0] + np.cos(end_circle.end_config.theta) * 2,
+        end_circle.end_config.p[0] + np.sin(end_circle.end_config.theta) * 2,
+    ]
+    final_lane = Line(start_circle.end_config, SE2Transform(end_point, end_circle.end_config.theta))
+
+    return [start_circle, end_circle, final_lane]
 
 
 def RL_path(start_config: SE2Transform, end_config: SE2Transform, radius: float):
@@ -137,7 +145,13 @@ def RL_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
     for circle in [start_circle, end_circle]:
         set_circle_angle(circle)
 
-    return [start_circle, end_circle]
+    end_point = [
+        end_circle.end_config.p[0] + np.cos(end_circle.end_config.theta) * 10,
+        end_circle.end_config.p[1] + np.sin(end_circle.end_config.theta) * 10,
+    ]
+    final_lane = Line(end_circle.end_config, SE2Transform(end_point, end_circle.end_config.theta))
+
+    return [start_circle, end_circle, final_lane]
 
 
 def set_circle_angle(circle: Curve):

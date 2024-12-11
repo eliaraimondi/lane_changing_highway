@@ -1,7 +1,6 @@
 from pickle import TRUE
 import random
 from dataclasses import dataclass
-from turtle import speed
 from typing import Sequence
 from dg_commons import SE2Transform
 
@@ -185,10 +184,9 @@ class Pdm4arAgent(Agent):
             """
             self.trajectory_started = True
         # If the trajectory is started compute the commands
+        ind = round(float(sim_obs.time) + 0.1, 1)
         if self.trajectory_started and list(self.trajectory.keys())[-1] > float(sim_obs.time):
-            commands = self.compute_actual_commands(
-                current_state, self.trajectory[round(float(sim_obs.time) + 0.1, 1)], self.sg.wheelbase
-            )
+            commands = self.compute_actual_commands(current_state, self.trajectory[ind], self.sg.wheelbase)
 
         if self.trajectory_started and list(self.trajectory.keys())[-1] <= float(sim_obs.time):
             commands = VehicleCommands(acc=0, ddelta=0)
