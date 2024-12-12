@@ -3,15 +3,18 @@ from shapely.geometry import Point
 import matplotlib.pyplot as plt
 import numpy as np
 from shapely.geometry import Polygon
-from shapely.affinity import translate
+from shapely.affinity import translate, rotate
 from dg_commons import SE2Transform
 from matplotlib.animation import FuncAnimation
+from sympy import use
 
 
 class CollisionChecker:
-    def __init__(self, portion_of_trajectory) -> None:
+    def __init__(self, portion_of_trajectory: float, orientation: float, my_name: str) -> None:
         self.geometries = {}
         self.portion_of_trajectory = portion_of_trajectory
+        self.my_name = my_name
+        self.orientation = orientation
 
     def add_other_geometry(self, name, other_geometry):
         self.geometries[name] = other_geometry
@@ -19,7 +22,6 @@ class CollisionChecker:
     def collision_checking(
         self,
         my_positions: list[SE2Transform],
-        my_name: str,
         other_positions_dict: dict[str, list[SE2Transform]],
     ) -> dict[str, list[int]]:
         """
@@ -31,8 +33,6 @@ class CollisionChecker:
         :param portion_of_trajectory: Float indicating the portion of the trajectory to consider for the collision checking
         :return: List of integers indicating the time steps in which a collision occurs
         """
-        self.my_name = my_name
-
         # Check on the lenght of the lists
         if len(my_positions) == 0 or all(
             len(my_positions) // self.portion_of_trajectory != len(other_positions)
@@ -77,7 +77,10 @@ class CollisionChecker:
             # Translate the car geometry to the current position
             current_center = geometry.centroid
             translation = (x - current_center.x, y - current_center.y)
-            translated_geometry = translate(geometry, xoff=translation[0], yoff=translation[1])
+            angle = self.orientation - theta
+            translated_geometry = rotate(
+                translate(geometry, xoff=translation[0], yoff=translation[1]), angle, use_radians=True
+            )
 
         # Consider the case of my car
         else:

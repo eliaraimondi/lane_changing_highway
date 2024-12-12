@@ -50,10 +50,8 @@ class Pdm4arAgent(Agent):
         # Create a dictionary to store the trajectories of other agents
         self.other_trajectories = {}
         self.portion_of_trajectory = 3
-        self.collision_checker = CollisionChecker(self.portion_of_trajectory)
         self.cars_already_seen = []
         self.trajectory_started = False
-        self.params = Pdm4arAgentParams()
         self.old_other_speeds = {}
 
     def on_episode_init(self, init_obs: InitSimObservations):
@@ -72,6 +70,7 @@ class Pdm4arAgent(Agent):
         self.control_points = init_obs.goal.ref_lane.control_points
         self.goal_ID = self.scenario.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
         self.orientation = self.goal.ref_lane.control_points[0].q.theta
+        self.collision_checker = CollisionChecker(self.portion_of_trajectory, self.orientation, self.name)
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -146,9 +145,6 @@ class Pdm4arAgent(Agent):
 
             ############################################################################################################
             # TRAJECTORY
-            # Initial state for the dubins
-            current_state = sim_obs.players[self.name].state
-            # Final speed of the car
             # Final speed of the car
             end_speed = current_state.vx
             if front_on_goal is not None:
@@ -198,7 +194,6 @@ class Pdm4arAgent(Agent):
             # 2. Check if the trajectory intersects with the trajectories of other agents
             agents_collisions = self.collision_checker.collision_checking(
                 trajectory_points,
-                my_name=self.name,
                 other_positions_dict=self.other_trajectories,
             )
 
@@ -310,8 +305,8 @@ class Pdm4arAgent(Agent):
                 self.other_trajectories[agent_name] = [
                     SE2Transform(
                         [
-                            cumulative_delta_s[step] * np.cos(agent.state.psi) + agent.state.x,
-                            cumulative_delta_s[step] * np.sin(agent.state.psi) + agent.state.y,
+                            cumulative_delta_s[step] * np.cos(self.orientation) + agent.state.x,
+                            cumulative_delta_s[step] * np.sin(self.orientation) + agent.state.y,
                         ],
                         agent.state.psi,
                     )
