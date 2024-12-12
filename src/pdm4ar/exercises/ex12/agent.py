@@ -16,8 +16,7 @@ from dg_commons.sim.models.vehicle_utils import VehicleParameters
 
 from pdm4ar.exercises.ex05.structures import mod_2_pi
 from .dubins import calculate_dubins_path, calculate_car_turning_radius
-from .collision_checking import collision_checking
-from .planner import compute_commands
+from .collision_checking import CollisionChecker
 from dg_commons import SE2Transform
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,6 +47,14 @@ class Pdm4arAgent(Agent):
         self.params = Pdm4arAgentParams()
         self.cars_on_same_lanelet = {}  # Name: PlayersObservations: state, occupancy
         self.cars_on_goal_lanelet = {}  # ""
+        # Create a dictionary to store the trajectories of other agents
+        self.other_trajectories = {}
+        self.portion_of_trajectory = 3
+        self.collision_checker = CollisionChecker(self.portion_of_trajectory)
+        self.cars_already_seen = []
+        self.trajectory_started = False
+        self.params = Pdm4arAgentParams()
+        self.old_other_speeds = {}
 
     def on_episode_init(self, init_obs: InitSimObservations):
         """This method is called by the simulator only at the beginning of each simulation.
@@ -61,19 +68,10 @@ class Pdm4arAgent(Agent):
         ).min_radius  # calculate the minimum turning radius of the car
 
         # Create a dictionary to store the speeds of other agents
-        self.old_other_speeds = {}
-
-        self.params = Pdm4arAgentParams()
-
-        self.lanelet_network = init_obs.dg_scenario.lanelet_network
+        self.scenario: LaneletNetwork = init_obs.dg_scenario.lanelet_network
         self.control_points = init_obs.goal.ref_lane.control_points
-        goal_lanelet_id = self.lanelet_network.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
-
-        self.trajectory_started = False
-
-        self.goal_ID = self.lanelet_network.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
+        self.goal_ID = self.scenario.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
         self.orientation = self.goal.ref_lane.control_points[0].q.theta
-        self.scenario = init_obs.dg_scenario.lanelet_network
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -84,7 +82,7 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
-        current_state = sim_obs.players[self.name].state
+        current_state: VehicleState = sim_obs.players[self.name].state
 
         # If the trajectory is not started, compute the trajectory
         if not self.trajectory_started:
@@ -166,9 +164,7 @@ class Pdm4arAgent(Agent):
             )
 
             lane_width = 2 * self.control_points[1].r
-
-            amplifier = lane_width * 5
-            radius = self.min_radius * amplifier
+            radius = self.min_radius * lane_width * 5
 
             self.trajectory = calculate_dubins_path(
                 current_state,
@@ -180,78 +176,37 @@ class Pdm4arAgent(Agent):
             )
 
             ############################################################################################################
-            # COMPUTE SPEEDS AND ACCELERATIONS OF OTHER AGENTS
-            # Save speeds of other agents to compuete their accelerations
-            numb_of_steps = len(self.trajectory)
-
-            self.other_speeds = {
-                agent_name: sim_obs.players[agent_name].state.vx
-                for agent_name in sim_obs.players
-                if agent_name != self.name
-            }
-
-            # If have old speeds, compute accelerations
-            if self.old_other_speeds:
-                self.other_accelerations = {
-                    agent_name: (self.other_speeds[agent_name] - self.old_other_speeds[agent_name]) / 0.1
-                    for agent_name in self.other_speeds
-                }
-            else:
-                # If it is the first iteration, set the car radius and initialize the other accelerations
-                self.my_radius = sim_obs.players[self.name].occupancy.length / 2
-                self.other_accelerations = {}
-
-            # Update old speeds
-            self.old_other_speeds = self.other_speeds
-
-            # COMPUTE POINTS OF TRAJECTORY OF OTHER AGENTS
-            # Create a dictionary to store the trajectories of other agents
-            other_trajectories = {}
-
-            # For each agent, compute the trajectory
-            for agent_name in sim_obs.players:
-                agent = sim_obs.players[agent_name]
-
-                # If we don't have accelleration of the agent, set it to 0
-                # if agent_name not in self.other_accelerations:
-                self.other_accelerations[agent_name] = 0
-
-                if agent_name != self.name:
-                    # Compute cumulative delta s for each agent every 0.1 seconds
-                    # Use the formula for the accelerated motion to compute the cumulative delta s
-                    cumulative_delta_s = [
-                        agent.state.vx * 0.1 * step + 0.5 * self.other_accelerations[agent_name] * (0.1 * step) ** 2
-                        for step in range(numb_of_steps)
-                    ]
-
-                    # Decompose the cumulative delta s into x and y components
-                    other_trajectories[agent_name] = [
-                        (
-                            cumulative_delta_s[step] * np.cos(agent.state.psi) + agent.state.x,
-                            cumulative_delta_s[step] * np.sin(agent.state.psi) + agent.state.y,
-                        )
-                        for step in range(numb_of_steps)
-                    ]
-
-            ############################################################################################################
             # CHECK IF THE TRAJECTORY OF THE AGENT INTERSECTS WITH THE TRAJECTORIES OF OTHER AGENTS
+            # 0. Compute the trajectories of other agents
+            self.compute_other_trajectories(sim_obs)
+
+            # Add the new_geometries to the collision checker
+            for agent_name in sim_obs.players:
+                if agent_name not in self.cars_already_seen:
+                    if agent_name == self.name:
+                        self.collision_checker.add_other_geometry(agent_name, self.sg)
+                    else:
+                        self.collision_checker.add_other_geometry(agent_name, sim_obs.players[agent_name].occupancy)
+                    self.cars_already_seen.append(agent_name)
+
             # 1. Trasform the trajectory in a list of tuples
             states = list(self.trajectory.values())
-            trajectory_points = [(tr.x, tr.y) for tr in states]  # need to use the points every 0.1 seconds
-            agents_collisions = {}
+            trajectory_points = [
+                SE2Transform([tr.x, tr.y], tr.psi) for tr in states
+            ]  # need to use the points every 0.1 seconds
+
             # 2. Check if the trajectory intersects with the trajectories of other agents
-            for agent_name in other_trajectories:
-                agent_radius = sim_obs.players[agent_name].occupancy.length / 2
-                agents_collisions[agent_name] = collision_checking(
-                    trajectory_points, other_trajectories[agent_name], self.my_radius, agent_radius
-                )
-            """
+            agents_collisions = self.collision_checker.collision_checking(
+                trajectory_points,
+                my_name=self.name,
+                other_positions_dict=self.other_trajectories,
+            )
+
             if all(not lst for lst in agents_collisions.values()):
                 self.trajectory_started = True
             else:
                 commands = VehicleCommands(acc=0, ddelta=0)
-            """
-            self.trajectory_started = True
+
         # If the trajectory is started compute the commands
         ind = round(float(sim_obs.time) + 0.1, 1)
         if self.trajectory_started and list(self.trajectory.keys())[-1] > float(sim_obs.time):
@@ -263,6 +218,15 @@ class Pdm4arAgent(Agent):
         return commands
 
     def point_is_right(self, current_x, current_y, current_psi, goal_x, goal_y):
+        """
+        This function checks if the goal lane is on the right side of the car
+        :param current_x: x coordinate of the current position
+        :param current_y: y coordinate of the current position
+        :param current_psi: current orientation of the car
+        :param goal_x: x coordinate of the goal position
+        :param goal_y: y coordinate of the goal position
+        :return: True if the goal is on the right side of the car, False otherwise
+        """
         # Calculate the heading vector
         heading_x = math.cos(current_psi)
         heading_y = math.sin(current_psi)
@@ -277,15 +241,12 @@ class Pdm4arAgent(Agent):
         # Return True if the goal is to the right
         return cross < 0
 
-    def _plot_print(self):
-        plt.figure()
-        # plt.plot(self.trajectory_to_plot[0], self.trajectory_to_plot[1])
-        plt.axis("equal")
-        plt.savefig("traiettoria.png")
-
     def compute_actual_commands(self, current_state, desired_state) -> VehicleCommands:
         """
         This method is called by the simulator to compute the actual commands to be executed
+        :param current_state: the current state of the agent at the current time step
+        :param desired_state: the desired state of the agent at the next time step
+        :return: the actual commands to be executed
         """
         # Compute the actual acceleration
         dt = 0.1
@@ -295,3 +256,64 @@ class Pdm4arAgent(Agent):
         ddelta = (desired_state.delta - current_state.delta) / dt
 
         return VehicleCommands(acc=acc, ddelta=ddelta)
+
+    def compute_other_trajectories(self, sim_obs):
+        """
+        This method computes the trajectories of other agents
+        :param sim_obs: the current observations of the simulator
+        :return: a dictionary containing the trajectories of other agents
+        """
+        # COMPUTE SPEEDS AND ACCELERATIONS OF OTHER AGENTS
+        # Save speeds of other agents to compuete their accelerations
+        numb_of_steps = len(self.trajectory) // self.portion_of_trajectory  # da tunnare
+
+        """# Compute the speeds of other agents
+        other_speeds = {
+            agent_name: sim_obs.players[agent_name].state.vx
+            for agent_name in sim_obs.players
+            if agent_name != self.name
+        }
+
+        # If have old speeds, compute accelerations
+        if self.old_other_speeds:
+            self.other_accelerations = {
+                agent_name: (other_speeds[agent_name] - self.old_other_speeds[agent_name]) / 0.1
+                for agent_name in self.other_speeds
+            }
+        else:
+            # If it is the first iteration, set the car radius and initialize the other accelerations
+            self.my_radius = sim_obs.players[self.name].occupancy.length / 2
+            self.other_accelerations = {}
+
+        # Update old speeds
+        self.old_other_speeds = self.other_speeds"""
+
+        other_accelerations = {}
+        # COMPUTE POINTS OF TRAJECTORY OF OTHER AGENTS
+        # For each agent, compute the trajectory
+        for agent_name in sim_obs.players:
+            agent = sim_obs.players[agent_name]
+
+            # If we don't have accelleration of the agent, set it to 0
+            # if agent_name not in self.other_accelerations:
+            other_accelerations[agent_name] = 0
+
+            if agent_name != self.name:
+                # Compute cumulative delta s for each agent every 0.1 seconds
+                # Use the formula for the accelerated motion to compute the cumulative delta s
+                cumulative_delta_s = [
+                    agent.state.vx * 0.1 * step + 0.5 * other_accelerations[agent_name] * (0.1 * step) ** 2
+                    for step in range(numb_of_steps)
+                ]
+
+                # Decompose the cumulative delta s into x and y components
+                self.other_trajectories[agent_name] = [
+                    SE2Transform(
+                        [
+                            cumulative_delta_s[step] * np.cos(agent.state.psi) + agent.state.x,
+                            cumulative_delta_s[step] * np.sin(agent.state.psi) + agent.state.y,
+                        ],
+                        agent.state.psi,
+                    )
+                    for step in range(numb_of_steps)
+                ]

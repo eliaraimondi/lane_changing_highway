@@ -14,7 +14,7 @@ from traitlets import Bool
 from .structures import *
 
 from dg_commons.sim.models.vehicle import VehicleState
-from .planner import compute_vehicle_states
+from .planner import Planner
 
 
 def calculate_car_turning_radius(wheel_base: float, max_steering_angle: float) -> DubinsParam:
@@ -91,7 +91,11 @@ def calculate_dubins_path(
 
     path = Path(path)
 
-    return compute_vehicle_states(path, start_speed, end_speed, radius, wheelbase)
+    # Trasform the path into a vehicle state dict
+    planner = Planner(path)
+    states = planner.compute_vehicle_states(start_speed, end_speed, radius, wheelbase)
+
+    return states
 
 
 def LR_path(start_config: SE2Transform, end_config: SE2Transform, radius: float):
