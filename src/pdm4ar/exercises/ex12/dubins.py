@@ -1,9 +1,14 @@
 from re import L
+from tracemalloc import start
+from turtle import distance
 from typing import final
 from dg_commons import SE2Transform
 import math
+import matplotlib.pyplot as plt
+import numpy as np
 
 import numpy as np
+from sympy import plot
 from traitlets import Bool
 
 from .structures import *
@@ -36,7 +41,6 @@ def calculate_turning_circles(current_config: SE2Transform, radius: float) -> Tu
         radius,
         curve_type=DubinsSegmentType.LEFT,
     )
-
     return TurningCircle(left=left_circle, right=right_circle)
 
 
@@ -60,12 +64,12 @@ def calculate_dubins_path(
     start_speed = init_config.vx
 
     # Compute the end configuration
-    half_point_distance = np.sqrt(radius**2 - (radius - lane_width / 2) ** 2)
-    end_config_x = start_config.p[0] + 2 * (
-        half_point_distance * np.cos(start_config.theta) - lane_width / 2 * np.sin(start_config.theta)
-    )
+    half_point_distance = np.sqrt(radius**2 - (radius - lane_width / 2) ** 2)  # okay
 
     if not goal_lane_is_right:
+        end_config_x = start_config.p[0] + 2 * (
+            half_point_distance * np.cos(start_config.theta) - lane_width / 2 * np.sin(start_config.theta)
+        )
         # Compute path from the current lane to the left lane
         end_config_y = start_config.p[1] + 2 * (
             half_point_distance * np.sin(start_config.theta) + lane_width / 2 * np.cos(start_config.theta)
@@ -74,6 +78,9 @@ def calculate_dubins_path(
         end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
         path = LR_path(start_config, end_config, radius)
     else:
+        end_config_x = start_config.p[0] + 2 * (
+            half_point_distance * np.cos(start_config.theta) + lane_width / 2 * np.sin(start_config.theta)
+        )
         # Compute path from the current lane to the right lane
         end_config_y = start_config.p[1] + 2 * (
             half_point_distance * np.sin(start_config.theta) - lane_width / 2 * np.cos(start_config.theta)
@@ -117,9 +124,9 @@ def LR_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
     length = start_circle.length
     end_point = [
         end_circle.end_config.p[0] + np.cos(end_circle.end_config.theta) * length,
-        end_circle.end_config.p[0] + np.sin(end_circle.end_config.theta) * length,
+        end_circle.end_config.p[1] + np.sin(end_circle.end_config.theta) * length,
     ]
-    final_lane = Line(start_circle.end_config, SE2Transform(end_point, end_circle.end_config.theta))
+    final_lane = Line(end_circle.end_config, SE2Transform(end_point, end_circle.end_config.theta))
 
     return [start_circle, end_circle, final_lane]
 
@@ -138,7 +145,6 @@ def RL_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
         - np.pi / 2
     )
     middle_point = SE2Transform([middle_point_x, middle_point_y], theta)
-
     # Set the end config in the first cirlce
     start_circle.end_config = middle_point
 
@@ -187,3 +193,16 @@ def correct_approximation(value: float, target: float, tolerance: float = 1e-5) 
     if np.isclose(value, target, atol=tolerance):
         return target
     return value
+
+
+def plot_circle(center: tuple, radius: float):
+    x_center, y_center = center
+    theta = np.linspace(0, 2 * np.pi, 100)
+    x = x_center + radius * np.cos(theta)
+    y = y_center + radius * np.sin(theta)
+    plt.plot(x, y)
+    plt.axis("equal")
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.title("Cerchio")
+    plt.grid(True)

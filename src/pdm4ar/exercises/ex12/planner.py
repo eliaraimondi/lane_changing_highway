@@ -176,7 +176,7 @@ def compute_vehicle_states(path: Path, init_speed: float, goal_speed: float, rad
 def extract_path_points(path: Path) -> list[SE2Transform]:
     """Extracts a fixed number of SE2Transform points on a path"""
     pts_list = []
-    num_points_per_segment = 20
+    num_points_per_segment = 25
     for idx, seg in enumerate(path):
         # if np.allclose(seg.length, 0):
         #     continue
@@ -205,12 +205,21 @@ def interpolate_curve_points(curve: Curve, number_of_points: int) -> list[SE2Tra
     angle = curve.arc_angle
     direction = curve.type
     angle = direction.value * angle
-    split_angle = angle / number_of_points
+    split_angle = angle / (number_of_points - 1)
     old_point = curve.start_config
     for _ in range(number_of_points):
         pts_list.append(old_point)
         point_next = get_next_point_on_curve(curve, point=old_point, delta_angle=split_angle)
         old_point = point_next
+    plt.figure()
+    plt.axis("equal")
+    plt.scatter(curve.start_config.p[0], curve.start_config.p[1], color="red")
+    plt.scatter(curve.end_config.p[0], curve.end_config.p[1], color="green")
+    plt.scatter(curve.center.p[0], curve.center.p[1], color="blue")
+    plt.plot([p.p[0] for p in pts_list], [p.p[1] for p in pts_list])
+    plt.savefig("curve_points.png")
+    norm1 = np.linalg.norm(curve.start_config.p - curve.center.p)
+    print(f"Norm1: {norm1}")
     return pts_list
 
 
@@ -224,33 +233,6 @@ def get_next_point_on_curve(curve: Curve, point: SE2Transform, delta_angle: floa
     rot_matrix = get_rot_matrix(delta_angle)
     next_point = SE2Transform((rot_matrix @ point_translated) + curve.center.p, point.theta + delta_angle)
     return next_point
-
-
-"""def smooth_delta(trajectory: dict) -> dict:
-    new_trajectory = copy.deepcopy(trajectory)
-    values = list(trajectory.values())
-    error = 0
-    max_dif_delta = 0.05
-    for i in range(len(values) - 1):
-        if values[i + 1].delta - new_trajectory[i / 10].delta > max_dif_delta and values[i + 1].delta > 0:
-            new_trajectory[(i + 1) / 10].delta = new_trajectory[i / 10].delta + max_dif_delta
-            error += values[i + 1].delta - new_trajectory[(i + 1) / 10].delta
-        elif values[i + 1].delta - new_trajectory[i / 10].delta < -max_dif_delta and values[i + 1].delta < 0:
-            new_trajectory[(i + 1) / 10].delta = new_trajectory[i / 10].delta - max_dif_delta
-            error += np.abs(values[i + 1].delta - new_trajectory[(i + 1) / 10].delta)
-        else:
-            additional_error = min(error, max_dif_delta)
-            if values[i + 1].delta > 0:
-                new_trajectory[(i + 1) / 10].delta = min(
-                    values[i + 1].delta + additional_error, new_trajectory[i / 10].delta + max_dif_delta
-                )
-            else:
-                new_trajectory[(i + 1) / 10].delta = max(
-                    values[i + 1].delta - additional_error, new_trajectory[i / 10].delta - max_dif_delta
-                )
-            error -= np.abs(values[i + 1].delta - new_trajectory[(i + 1) / 10].delta)
-
-    return new_trajectory"""
 
 
 def smooth_delta(trajectory: dict) -> dict:
