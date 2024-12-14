@@ -76,6 +76,7 @@ class Pdm4arAgent(Agent):
         :param sim_obs:
         :return:
         """
+        ciao = 1
         current_state: VehicleState = sim_obs.players[self.name].state
         # Check if the goal lane is on the right side of the car
         if float(sim_obs.time) == 0.0:
