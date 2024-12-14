@@ -37,7 +37,7 @@ class Planner:
             trajectory_length += segment.length
 
         # Compute the constant acceleration to reach the goal speed
-        acc = min((goal_speed**2 - init_speed**2) / (2 * trajectory_length))
+        acc = min((goal_speed**2 - init_speed**2) / (2 * trajectory_length), self.max_acc)
 
         # Compute the time to reach the goal speed
         if acc == 0:

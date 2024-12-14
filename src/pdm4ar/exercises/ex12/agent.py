@@ -89,7 +89,6 @@ class Pdm4arAgent(Agent):
             self.dubins_planner = DubinsPath(
                 self.sg.wheelbase, self.sp.acc_limits[1], self.goal_lane_is_right, self.lane_width, self.sp.delta_max
             )
-            self.min_radius = self.dubins_planner.calculate_car_turning_radius()
 
         # If the trajectory is not started, compute the trajectory
         if not self.trajectory_started:
@@ -158,7 +157,9 @@ class Pdm4arAgent(Agent):
             if front_on_goal is not None:
                 end_speed = front_on_goal.state.vx
 
-            radius = self.min_radius * self.lane_width * 5
+            # radius = self.min_radius * self.lane_width * 5
+
+            radius = self.dubins_planner.calculate_min_radius(current_state, end_speed)
 
             self.trajectory = self.dubins_planner.calculate_dubins_path(current_state, end_speed, radius)
 

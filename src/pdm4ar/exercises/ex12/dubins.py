@@ -15,6 +15,80 @@ class DubinsPath:
         self.tolerance: float = 1e-5
         self.min_car_radius = self.wheelbase / np.tan(self.delta_max)
 
+    def calculate_min_radius(
+        self,
+        init_config: VehicleState,
+        end_speed: float,
+    ) -> float:
+        """
+        Calculate the Dubins path with only 2 curves depending on the goal lane
+        params:
+        start_config: the start configuration of the car (x,y,theta)
+        radius: the turning radius of the car
+        goal_lane_is_right: a boolean indicating if the goal lane is on the right side of the car
+        lane_width: the width of the lane
+        """
+        start_config = SE2Transform([init_config.x, init_config.y], init_config.psi)
+        start_speed = init_config.vx
+
+        for radius in np.arange(self.min_car_radius, 100):
+            # Compute the end configuration
+            self.radius = radius
+            half_point_distance = np.sqrt(radius**2 - (radius - self.lane_width / 2) ** 2)  # okay
+
+            if not self.goal_lane_is_right:
+                end_config_x = start_config.p[0] + 2 * (
+                    half_point_distance * np.cos(start_config.theta) - self.lane_width / 2 * np.sin(start_config.theta)
+                )
+                # Compute path from the current lane to the left lane
+                end_config_y = start_config.p[1] + 2 * (
+                    half_point_distance * np.sin(start_config.theta) + self.lane_width / 2 * np.cos(start_config.theta)
+                )
+
+                end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
+                path = self.LR_path(start_config, end_config)
+            else:
+                end_config_x = start_config.p[0] + 2 * (
+                    half_point_distance * np.cos(start_config.theta) + self.lane_width / 2 * np.sin(start_config.theta)
+                )
+                # Compute path from the current lane to the right lane
+                end_config_y = start_config.p[1] + 2 * (
+                    half_point_distance * np.sin(start_config.theta) - self.lane_width / 2 * np.cos(start_config.theta)
+                )
+
+                end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
+                path = self.RL_path(start_config, end_config)
+
+            path = Path(path)
+
+            # Trasform the path into a vehicle state dict
+            planner = Planner(path, max_acc=self.max_acc)
+            states = planner.compute_vehicle_states(start_speed, end_speed, radius, self.wheelbase)
+            cosines = self._compute_cosines(states)
+            if all(cosine < 0.5 for cosine in cosines):
+                print(f"Path with radius {radius} is smooth enough")
+                print("Proceeding with collision checking...")
+                return radius
+            else:
+                print(f"Path with radius {radius} is not smooth enough, trying with a bigger radius")
+
+        return self.min_car_radius
+
+    def _compute_cosines(self, states: dict[float, VehicleState]) -> list[float]:
+        """
+        Compute the cosines of the delta values
+        """
+        deltas = []
+        tf = round(((len(states) - 1) / 10), 1)
+
+        for ts in range(0, int(tf * 10)):
+            ts = round(float(ts / 10), 1)
+            ts_next = round(float(ts + 0.1), 1)
+            difference = states[ts_next].delta - states[ts].delta
+            deltas.append(abs(difference))
+
+        return deltas
+
     def calculate_turning_circles(self, current_config: SE2Transform) -> TurningCircle:
         # TODO implement here your solution
         theta = current_config.theta
