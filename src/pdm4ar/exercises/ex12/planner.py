@@ -10,9 +10,10 @@ import copy
 
 
 class Planner:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, max_acc: float):
         self.path = path
         self.vehicle_states = {}
+        self.max_acc = max_acc
 
         # Convert the path to a list of states
         interpolator = PathPoints(self.path)
@@ -36,7 +37,7 @@ class Planner:
             trajectory_length += segment.length
 
         # Compute the constant acceleration to reach the goal speed
-        acc = (goal_speed**2 - init_speed**2) / (2 * trajectory_length)
+        acc = min((goal_speed**2 - init_speed**2) / (2 * trajectory_length))
 
         # Compute the time to reach the goal speed
         if acc == 0:

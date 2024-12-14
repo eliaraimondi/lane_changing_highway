@@ -1,4 +1,3 @@
-from pickle import TRUE
 import random
 from dataclasses import dataclass
 from typing import Sequence
@@ -9,16 +8,13 @@ from dg_commons import PlayerName
 from dg_commons.sim.goals import PlanningGoal
 from dg_commons.sim import SimObservations, InitSimObservations
 from dg_commons.sim.agents import Agent
-from dg_commons.sim.models.obstacles import StaticObstacle
-from dg_commons.sim.models.vehicle import VehicleCommands, VehicleModel, VehicleState
+from dg_commons.sim.models.vehicle import VehicleCommands, VehicleState
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
 
-from pdm4ar.exercises.ex05.structures import mod_2_pi
-from .dubins import calculate_dubins_path, calculate_car_turning_radius
+from .dubins import DubinsPath
 from .collision_checking import CollisionChecker
 from dg_commons import SE2Transform
-import matplotlib.pyplot as plt
 import numpy as np
 import math
 
@@ -49,7 +45,7 @@ class Pdm4arAgent(Agent):
         self.cars_on_goal_lanelet = {}  # ""
         # Create a dictionary to store the trajectories of other agents
         self.other_trajectories = {}
-        self.portion_of_trajectory = 3
+        self.portion_of_trajectory = 2
         self.cars_already_seen = []
         self.trajectory_started = False
         self.old_other_speeds = {}
@@ -62,9 +58,6 @@ class Pdm4arAgent(Agent):
         self.goal = init_obs.goal
         self.sg = init_obs.model_geometry
         self.sp = init_obs.model_params
-        self.min_radius = calculate_car_turning_radius(
-            self.sg.lr + self.sg.lf, self.sp.delta_max
-        ).min_radius  # calculate the minimum turning radius of the car
 
         # Create a dictionary to store the speeds of other agents
         self.scenario: LaneletNetwork = init_obs.dg_scenario.lanelet_network
@@ -72,6 +65,7 @@ class Pdm4arAgent(Agent):
         self.goal_ID = self.scenario.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
         self.orientation = self.goal.ref_lane.control_points[0].q.theta
         self.collision_checker = CollisionChecker(self.portion_of_trajectory, self.orientation, self.name)
+        self.lane_width = 2 * self.control_points[1].r
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -83,6 +77,19 @@ class Pdm4arAgent(Agent):
         :return:
         """
         current_state: VehicleState = sim_obs.players[self.name].state
+        # Check if the goal lane is on the right side of the car
+        if float(sim_obs.time) == 0.0:
+            self.goal_lane_is_right = self.point_is_right(
+                current_state.x,
+                current_state.y,
+                current_state.psi,
+                self.control_points[1].q.p[0],
+                self.control_points[1].q.p[1],
+            )
+            self.dubins_planner = DubinsPath(
+                self.sg.wheelbase, self.sp.acc_limits[1], self.goal_lane_is_right, self.lane_width, self.sp.delta_max
+            )
+            self.min_radius = self.dubins_planner.calculate_car_turning_radius()
 
         # If the trajectory is not started, compute the trajectory
         if not self.trajectory_started:
@@ -151,26 +158,9 @@ class Pdm4arAgent(Agent):
             if front_on_goal is not None:
                 end_speed = front_on_goal.state.vx
 
-            # Check if the goal lane is on the right side of the car
-            goal_lane_is_right = self.point_is_right(
-                current_state.x,
-                current_state.y,
-                current_state.psi,
-                self.control_points[1].q.p[0],
-                self.control_points[1].q.p[1],
-            )
+            radius = self.min_radius * self.lane_width * 5
 
-            lane_width = 2 * self.control_points[1].r
-            radius = self.min_radius * lane_width * 5
-
-            self.trajectory = calculate_dubins_path(
-                current_state,
-                end_speed,
-                radius,
-                goal_lane_is_right,
-                lane_width=lane_width,
-                wheelbase=self.sg.wheelbase,
-            )
+            self.trajectory = self.dubins_planner.calculate_dubins_path(current_state, end_speed, radius)
 
             ############################################################################################################
             # CHECK IF THE TRAJECTORY OF THE AGENT INTERSECTS WITH THE TRAJECTORIES OF OTHER AGENTS
@@ -295,10 +285,9 @@ class Pdm4arAgent(Agent):
                 np.sqrt((front_car.state.x - current_state.x) ** 2 + (front_car.state.y - current_state.y) ** 2)
                 - 2 * self.sg.length
             )
-            self._compute_max_speed(distance_to_cover, front_car.state.vx)
-            # Consider a coeff that multiplies the distance to cover
-            kp = 0.1  # da tunnare
-            acc = min(self.sp.acc_limits[1], (front_car.state.vx - current_state.vx) / self.dt + kp * distance_to_cover)
+            max_speed = self._compute_max_speed(distance_to_cover, front_car.state.vx, current_state.vx)
+
+            acc = min(self.sp.acc_limits[1], (max_speed - current_state.vx) / self.dt)
 
         # Compute the actual ddelta
         delta_psi = self.orientation - current_state.psi
@@ -308,22 +297,28 @@ class Pdm4arAgent(Agent):
 
         return VehicleCommands(acc=acc, ddelta=ddelta)
 
-    def _compute_max_speed(self, distance_to_cover: float, speed_goal: float):
+    def _compute_max_speed(self, distance_to_cover: float, speed_goal: float, current_speed: float) -> float:
         """
         This method computes the maximum speed of the agent considering the distance from the car in front
         of the agent
         :param distance_to_cover: the distance to cover to reach the car in front of the agent
         :param speed_goal: the current_speed of the agent
+        :param current_speed: my current speed
         :return: the maximum speed of the agent
         """
-        # Compute the maximum speed of the agent
+        # Consider the maximum speed and dec of the agent
         max_speed = self.sp.vx_limits[1]
         max_dec = self.sp.acc_limits[0]
 
-        # Compute the maximum speed considering the distance to cover
-        speed = min(max_speed, np.sqrt(speed_goal**2 - 2 * max_dec * distance_to_cover))
+        # Compute the distance at the next state considering my current speed and the speed of the car in front
+        distance = distance_to_cover + (speed_goal - current_speed) * self.dt
 
-        return max
+        # Compute the maximum speed considering the distance to cover
+        speed_at_next_state = min(
+            max_speed, np.sqrt(speed_goal**2 - 2 * max_dec * distance)
+        )  # DA CONTROLLARE QUANDO QUESTA RADICE DIVENTA NEGATIVA
+
+        return speed_at_next_state
 
     def _compute_other_trajectories(self, sim_obs):
         """
