@@ -13,10 +13,7 @@ class DubinsPath:
         self.lane_width = lane_width
         self.delta_max = delta_max
         self.tolerance: float = 1e-5
-
-    def calculate_car_turning_radius(self) -> float:
-        # TODO implement here your solution
-        return self.wheelbase / np.tan(self.delta_max)
+        self.min_car_radius = self.wheelbase / np.tan(self.delta_max)
 
     def calculate_turning_circles(self, current_config: SE2Transform) -> TurningCircle:
         # TODO implement here your solution
