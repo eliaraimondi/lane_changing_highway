@@ -167,6 +167,7 @@ class Pdm4arAgent(Agent):
             # CHECK IF THE TRAJECTORY OF THE AGENT INTERSECTS WITH THE TRAJECTORIES OF OTHER AGENTS
             # 0. Compute the trajectories of other agents
             self._compute_other_trajectories(sim_obs)
+            a = 0
 
             # Add the new_geometries to the collision checker
             for agent_name in sim_obs.players:
@@ -192,7 +193,7 @@ class Pdm4arAgent(Agent):
             if all(not lst for lst in agents_collisions.values()):
                 self.trajectory_started = True
             else:
-                commands = self.mantein_lane(current_state, sim_obs)
+                commands = self._maintain_lane(current_state, sim_obs)
                 commands = VehicleCommands(acc=0, ddelta=0)
 
         # If the trajectory is started compute the commands
@@ -201,7 +202,7 @@ class Pdm4arAgent(Agent):
             commands = self.compute_actual_commands(current_state, self.trajectory[ind])
 
         if self.trajectory_started and list(self.trajectory.keys())[-1] <= float(sim_obs.time):
-            commands = self.mantein_lane(current_state, sim_obs)
+            commands = self._maintain_lane(current_state, sim_obs)
 
         return commands
 
@@ -244,7 +245,7 @@ class Pdm4arAgent(Agent):
 
         return VehicleCommands(acc=acc, ddelta=ddelta)
 
-    def mantein_lane(self, current_state, sim_obs):
+    def _maintain_lane(self, current_state, sim_obs):
         """
         This method is called by the simulator to mantein the lane
         :param current_state: the current state of the agent at the current time step
