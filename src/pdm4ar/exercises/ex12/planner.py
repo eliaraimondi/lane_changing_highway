@@ -36,13 +36,15 @@ class Planner:
             trajectory_length += segment.length
 
         # Compute the constant acceleration to reach the goal speed
-        acc = (goal_speed**2 - init_speed**2) / 2 * trajectory_length
+        acc = (goal_speed**2 - init_speed**2) / (2 * trajectory_length)
 
         # Compute the time to reach the goal speed
         if acc == 0:
             total_time = trajectory_length / init_speed
         else:
             discriminant = init_speed**2 + 2 * acc * trajectory_length
+            if discriminant < 0:
+                raise ValueError("The discriminant is negative")
             total_time = (-init_speed + math.sqrt(discriminant)) / acc
 
         # Compute the speed for each point in the trajectory
@@ -76,60 +78,52 @@ class Planner:
                     # Compute the distance along the curve axis
                     delta_s = speeds[i] * dt + 0.5 * acc * dt**2
 
-                    if self.trajectory[i].p[0] <= self.path[2].start_config.p[0]:  # consider the two curves
-                        # Decompose the distance along the curve axis into x and y components
-                        alpha = delta_s / radius
-                        chord_length = 2 * radius * math.sin(alpha / 2)
+                    # Decompose the distance along the curve axis into x and y components
+                    alpha = delta_s / radius
+                    chord_length = 2 * radius * math.sin(alpha / 2)
 
-                        # Find the center of the turning circle
-                        if self.trajectory[i].p[0] < self.path[1].start_config.p[0]:
-                            center = self.path[0].center.p
-                        else:
-                            center = self.path[1].center.p
+                    # Find the center of the turning circle
+                    if self.trajectory[i].p[0] < self.path[1].start_config.p[0]:
+                        center = self.path[0].center.p
+                    else:
+                        center = self.path[1].center.p
 
-                        # Compute the new x and y
-                        alpha_radius = math.atan2(
-                            center[1] - self.trajectory[i].p[1], center[0] - self.trajectory[i].p[0]
-                        )
-                        ang_int = (np.pi - alpha) / 2
-                        my_ang = alpha_radius + ang_int
-                        new_x = self.trajectory[i].p[0] + chord_length * math.cos(my_ang)
-                        new_y = self.trajectory[i].p[1] + chord_length * math.sin(my_ang)
+                    # Compute the new x and y
+                    alpha_radius = math.atan2(center[1] - self.trajectory[i].p[1], center[0] - self.trajectory[i].p[0])
+                    ang_int = (np.pi - alpha) / 2
+                    my_ang = alpha_radius + ang_int
+                    new_x = self.trajectory[i].p[0] + chord_length * math.cos(my_ang)
+                    new_y = self.trajectory[i].p[1] + chord_length * math.sin(my_ang)
 
-                        # Compute the new psi and v
-                        old_delta_s = (
-                            speeds[i] * (time_steps[i + 1] - time) + 0.5 * acc * (time_steps[i + 1] - time) ** 2
-                        )
-                        new_psi = self.trajectory[i].theta + (delta_s / old_delta_s) * (
-                            mod_2_pi(self.trajectory[i + 1].theta) - mod_2_pi(self.trajectory[i].theta)
-                        )
-                        new_v = speeds[i] + acc * dt
+                    # Compute the new psi and v
+                    old_delta_s = speeds[i] * (time_steps[i + 1] - time) + 0.5 * acc * (time_steps[i + 1] - time) ** 2
+                    new_psi = self.trajectory[i].theta + (delta_s / old_delta_s) * (
+                        mod_2_pi(self.trajectory[i + 1].theta) - mod_2_pi(self.trajectory[i].theta)
+                    )
+                    new_v = speeds[i] + acc * dt
 
-                        # Compute the new delta
-                        if np.abs(new_psi - self.trajectory[i].theta) > 5:
-                            delta_psi = new_psi - self.trajectory[i].theta - 2 * np.pi
-                        else:
-                            delta_psi = new_psi - self.trajectory[i].theta
-                        dpsi = delta_psi / dt
-                        new_delta = math.atan((wheelbase * dpsi) / new_v)
-                        break
-
-                    else:  # condider the straight line
-                        # Compute the new x and y
-                        new_x = self.trajectory[i].p[0] + delta_s * math.cos(self.trajectory[i].theta)
-                        new_y = self.trajectory[i].p[1] + delta_s * math.sin(self.trajectory[i].theta)
-
-                        # Compute the new psi and v
-                        old_delta_s = (
-                            speeds[i] * (time_steps[i + 1] - time) + 0.5 * acc * (time_steps[i + 1] - time) ** 2
-                        )
-                        new_psi = self.path[2].start_config.theta
-                        new_v = speeds[i] + acc * dt
-                        new_delta = 0
-                        break
+                    # Compute the new delta
+                    if np.abs(new_psi - self.trajectory[i].theta) > 5:
+                        delta_psi = new_psi - self.trajectory[i].theta - 2 * np.pi
+                    else:
+                        delta_psi = new_psi - self.trajectory[i].theta
+                    dpsi = delta_psi / dt
+                    new_delta = math.atan((wheelbase * dpsi) / new_v)
+                    break
 
             self.vehicle_states[t] = VehicleState(x=new_x, y=new_y, psi=mod_2_pi(new_psi), vx=new_v, delta=new_delta)
 
+        # Add the last point
+        delta_s = speeds[-1] * 0.1 + 0.5 * acc * 0.1**2
+        psi = self.trajectory[-1].theta
+        vx = speeds[-1] + acc * 0.1
+        self.vehicle_states[round(t + 0.1, 1)] = VehicleState(
+            x=self.trajectory[-1].p[0] + np.cos(psi) * delta_s,
+            y=self.trajectory[-1].p[1] + np.sin(psi) * delta_s,
+            psi=psi,
+            vx=vx,
+            delta=0,
+        )
         self._plot_vehicle_states()
         self._smooth_delta()
 
@@ -141,7 +135,7 @@ class Planner:
         """
         self.new_trajectory = copy.deepcopy(self.vehicle_states)
         delta = self.vehicle_states[0.1].delta
-        tf = round(((len(self.vehicle_states) - 1) / 10) / 3 * 2, 1)
+        tf = round(((len(self.vehicle_states) - 1) / 10), 1)
 
         # Compute sin and approximate for the number of element of trajectory
         for ts in range(0, int(tf * 10) + 1):

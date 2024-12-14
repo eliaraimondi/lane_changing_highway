@@ -1,12 +1,9 @@
-from shapely import polygons
-from shapely.geometry import Point
 import matplotlib.pyplot as plt
 import numpy as np
 from shapely.geometry import Polygon
 from shapely.affinity import translate, rotate
 from dg_commons import SE2Transform
 from matplotlib.animation import FuncAnimation
-from sympy import use
 
 
 class CollisionChecker:

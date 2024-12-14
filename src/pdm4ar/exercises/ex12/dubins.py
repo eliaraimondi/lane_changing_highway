@@ -132,7 +132,7 @@ def LR_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
     ]
     final_lane = Line(end_circle.end_config, SE2Transform(end_point, end_circle.end_config.theta))
 
-    return [start_circle, end_circle, final_lane]
+    return [start_circle, end_circle]
 
 
 def RL_path(start_config: SE2Transform, end_config: SE2Transform, radius: float):
@@ -166,7 +166,7 @@ def RL_path(start_config: SE2Transform, end_config: SE2Transform, radius: float)
     ]
     final_lane = Line(end_circle.end_config, SE2Transform(end_point, end_circle.end_config.theta))
 
-    return [start_circle, end_circle, final_lane]
+    return [start_circle, end_circle]
 
 
 def set_circle_angle(circle: Curve):
