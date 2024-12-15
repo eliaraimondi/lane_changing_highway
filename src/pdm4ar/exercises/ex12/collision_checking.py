@@ -32,7 +32,7 @@ class CollisionChecker:
         """
         # Check on the lenght of the lists
         if len(my_positions) == 0 or all(
-            len(my_positions) // self.portion_of_trajectory != len(other_positions)
+            int(len(my_positions) * self.portion_of_trajectory) != len(other_positions)
             for other_positions in other_positions_dict.values()
         ):
             print("ERROR! The lists for the positions are empty or have different lengths.")
@@ -40,7 +40,7 @@ class CollisionChecker:
 
         # Create the shapely points buffered for our car and the other agent
         my_points = []
-        for my_position in my_positions[0 : (len(my_positions) // self.portion_of_trajectory)]:
+        for my_position in my_positions[0 : int(len(my_positions) * self.portion_of_trajectory)]:
             my_points.append(self.compute_car_position(my_position, self.my_name))
 
         collision_indexes = {}
@@ -158,7 +158,7 @@ class CollisionChecker:
 
         # Crea l'animazione
         fig = plt.figure(figsize=(8, 8))
-        animation = FuncAnimation(fig, update, frames=num_frames, interval=500)  # Intervallo in millisecondi
+        animation = FuncAnimation(fig, update, frames=num_frames, interval=500)  # type: ignore # Intervallo in millisecondi
 
         # Salva il video (richiede ffmpeg o imagemagick)
         animation.save("polygons_animation.mp4", fps=2, extra_args=["-vcodec", "libx264"])

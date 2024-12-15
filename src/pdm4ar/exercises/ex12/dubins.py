@@ -3,10 +3,19 @@ import numpy as np
 from .structures import *
 from dg_commons.sim.models.vehicle import VehicleState
 from .planner import Planner
+from scipy.optimize import fsolve
 
 
 class DubinsPath:
-    def __init__(self, wheelbase: float, max_acc: float, goal_lane_is_right: bool, lane_width: float, delta_max: float):
+    def __init__(
+        self,
+        wheelbase: float,
+        max_acc: float,
+        goal_lane_is_right: bool,
+        lane_width: float,
+        delta_max: float,
+        radius_coeff: float,
+    ):
         self.max_acc = max_acc
         self.wheelbase = wheelbase
         self.goal_lane_is_right = goal_lane_is_right
@@ -14,6 +23,7 @@ class DubinsPath:
         self.delta_max = delta_max
         self.tolerance: float = 1e-5
         self.min_car_radius = self.wheelbase / np.tan(self.delta_max)
+        self.radius_coeff = radius_coeff
 
     def calculate_min_radius(
         self,
@@ -28,51 +38,22 @@ class DubinsPath:
         goal_lane_is_right: a boolean indicating if the goal lane is on the right side of the car
         lane_width: the width of the lane
         """
-        start_config = SE2Transform([init_config.x, init_config.y], init_config.psi)
         start_speed = init_config.vx
+        v_max = max(start_speed, end_speed)
+        w = self.lane_width
+        B = self.wheelbase
 
-        for radius in np.arange(self.min_car_radius, 100):
-            # Compute the end configuration
-            self.radius = radius
-            half_point_distance = np.sqrt(radius**2 - (radius - self.lane_width / 2) ** 2)  # okay
+        # Equation to solve
+        def equation(x):
+            return w / (4 * x**2) - (self.radius_coeff * np.pi**2 * np.arctan(4 * B * x**2 / w) * v_max) / np.arcsin(x)
 
-            if not self.goal_lane_is_right:
-                end_config_x = start_config.p[0] + 2 * (
-                    half_point_distance * np.cos(start_config.theta) - self.lane_width / 2 * np.sin(start_config.theta)
-                )
-                # Compute path from the current lane to the left lane
-                end_config_y = start_config.p[1] + 2 * (
-                    half_point_distance * np.sin(start_config.theta) + self.lane_width / 2 * np.cos(start_config.theta)
-                )
+        # Numerical solve
+        r_initial = 40
+        x_initial = np.sqrt(w) / (2 * np.sqrt(r_initial))
+        x_solution = fsolve(equation, x_initial)[0]
 
-                end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
-                path = self.LR_path(start_config, end_config)
-            else:
-                end_config_x = start_config.p[0] + 2 * (
-                    half_point_distance * np.cos(start_config.theta) + self.lane_width / 2 * np.sin(start_config.theta)
-                )
-                # Compute path from the current lane to the right lane
-                end_config_y = start_config.p[1] + 2 * (
-                    half_point_distance * np.sin(start_config.theta) - self.lane_width / 2 * np.cos(start_config.theta)
-                )
-
-                end_config = SE2Transform([end_config_x, end_config_y], start_config.theta)
-                path = self.RL_path(start_config, end_config)
-
-            path = Path(path)
-
-            # Trasform the path into a vehicle state dict
-            planner = Planner(path, max_acc=self.max_acc)
-            states = planner.compute_vehicle_states(start_speed, end_speed, radius, self.wheelbase)
-            cosines = self._compute_cosines(states)
-            if all(cosine < 0.5 for cosine in cosines):
-                print(f"Path with radius {radius} is smooth enough")
-                print("Proceeding with collision checking...")
-                return radius
-            else:
-                print(f"Path with radius {radius} is not smooth enough, trying with a bigger radius")
-
-        return self.min_car_radius
+        r_solution = w / (4 * x_solution**2)
+        return r_solution
 
     def _compute_cosines(self, states: dict[float, VehicleState]) -> list[float]:
         """

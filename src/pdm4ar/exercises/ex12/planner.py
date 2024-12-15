@@ -85,9 +85,9 @@ class Planner:
 
                     # Find the center of the turning circle
                     if self.trajectory[i].p[0] < self.path[1].start_config.p[0]:
-                        center = self.path[0].center.p
+                        center = self.path[0].center.p  # type: ignore
                     else:
-                        center = self.path[1].center.p
+                        center = self.path[1].center.p  # type: ignore
 
                     # Compute the new x and y
                     alpha_radius = math.atan2(center[1] - self.trajectory[i].p[1], center[0] - self.trajectory[i].p[0])
@@ -134,15 +134,29 @@ class Planner:
         """
         This function smooths the delta values of the vehicle states
         """
+        tf = round(((len(self.vehicle_states) - 1) / 10), 1)
         self.new_trajectory = copy.deepcopy(self.vehicle_states)
         delta = self.vehicle_states[0.1].delta
-        tf = round(((len(self.vehicle_states) - 1) / 10), 1)
+        xi = self.vehicle_states[0.0].x  # Get the first x value
+        xf = self.vehicle_states[round(max(self.vehicle_states.keys()), 1)].x  # Get the last x value
 
         # Compute sin and approximate for the number of element of trajectory
+        deltas = {}
+        X = np.linspace(0, xf - xi, 1000)
+        for xs in X:
+            deltas[xs] = np.pi / 2 * delta * np.sin(2 * np.pi / (xf - xi) * xs)
+
+        # Find the delta corrisponding at each x in the trajecotry
         for ts in range(0, int(tf * 10) + 1):
             ts = round(float(ts / 10), 1)
-            new_delta = np.pi / 2 * delta * np.sin(2 * np.pi / tf * ts)
-            self.new_trajectory[ts].delta = new_delta
+            x_state = self.vehicle_states[ts].x - xi
+            for i in range(len(X) - 1):
+                if X[i] <= x_state < X[i + 1]:
+                    new_delta = deltas[X[i]] + ((X[i] - X[i + 1]) * (deltas[X[i]] - deltas[X[i + 1]])) / (
+                        X[i] - X[i + 1]
+                    )
+                    self.new_trajectory[ts].delta = new_delta
+                    break
 
     def _plot_vehicle_states(self):
         """
@@ -164,16 +178,16 @@ class PathPoints:
         """Extracts a fixed number of SE2Transform points on a path"""
         pts_list = []
 
-        for idx, seg in enumerate(self.path):
+        for _, seg in enumerate(self.path):
             # if np.allclose(seg.length, 0):
             #     continue
             seg.start_config.theta = mod_2_pi(seg.start_config.theta)
             seg.end_config.theta = mod_2_pi(seg.end_config.theta)
             if seg.type is DubinsSegmentType.STRAIGHT:
-                line_pts = self.interpolate_line_points(seg)
+                line_pts = self.interpolate_line_points(seg)  # type: ignore
                 pts_list.extend(line_pts)
             else:  # Curve
-                curve_pts = self.interpolate_curve_points(seg)
+                curve_pts = self.interpolate_curve_points(seg)  # type: ignore
                 pts_list.extend(curve_pts)
         pts_list.append(self.path[-1].end_config)
         return pts_list
@@ -201,7 +215,7 @@ class PathPoints:
     def get_next_point_on_curve(self, curve: Curve, point: SE2Transform, delta_angle: float) -> SE2Transform:
         point_translated = point.p - curve.center.p
         rot_matrix = self.get_rot_matrix(delta_angle)
-        next_point = SE2Transform((rot_matrix @ point_translated) + curve.center.p, point.theta + delta_angle)
+        next_point = SE2Transform((rot_matrix @ point_translated) + curve.center.p, point.theta + delta_angle)  # type: ignore
         return next_point
 
     def get_rot_matrix(self, alpha: float) -> np.ndarray:
