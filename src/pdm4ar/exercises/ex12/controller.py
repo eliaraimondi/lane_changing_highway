@@ -1,3 +1,4 @@
+from turtle import distance
 import numpy as np
 import math
 import matplotlib.pyplot as plt
@@ -8,7 +9,7 @@ import casadi as ca
 
 
 class Controller:
-    def __init__(self, scenario, sp: VehicleParameters, sg: VehicleGeometry, dt, name, orientation):
+    def __init__(self, scenario, sp: VehicleParameters, sg: VehicleGeometry, dt, name, orientation, lane_width: float):
         self.dt = dt
         self.scenario = scenario
         self.sp = sp
@@ -19,6 +20,7 @@ class Controller:
         self.times = []
         self.cos_theta = np.cos(self.orientation)
         self.sin_theta = np.sin(self.orientation)
+        self.lane_width = lane_width
 
     def compute_actual_commands(self, current_state, desired_state) -> VehicleCommands:
         """
@@ -110,7 +112,9 @@ class Controller:
 
         # Compute the maximum speed considering the distance to cover
         if distance > 0:
-            speed_at_next_state = min(max_speed, np.sqrt(speed_goal**2 - 2 * max_dec * distance))
+            speed_at_next_state = max(
+                min(max_speed, np.sqrt(speed_goal**2 - 2 * max_dec * distance)), self.sp.vx_limits[0]
+            )
         else:
             speed_at_next_state = 0
 
@@ -152,7 +156,7 @@ class Controller:
         # If there is no car in front of the agent, return None
         return None
 
-    def successor_and_predecessor(self, my_lanelet_ID: float) -> tuple:
+    def successor_and_predecessor(self, my_lanelet_ID: int) -> tuple:
         """
         This function returns the successor and the predecessor of the goal lanelet
         :param my_lanelet_ID: the ID of the lanelet of the agent
@@ -169,6 +173,53 @@ class Controller:
             lane_pre_ID = None
 
         return (lane_suc_ID, lane_pre_ID, my_lanelet_ID)
+
+    def control_in_wall_cars(
+        self, current_state: VehicleState, sim_obs, goal_IDs, goal_lane_is_right: bool
+    ) -> VehicleCommands:
+        """
+        This method is called by the simulator to mantein the lane in the wall cars condition
+        :param current_state: the current state of the agent at the current time step
+        :param sim_obs: the current observations of the simulator
+        :return: the actual commands to be executed
+        """
+        project_segment = self.lane_width
+
+        agents_in_goal = []
+        agents = sim_obs.players
+        for agent_name, agent in agents.items():
+            position = [np.array([agent.state.x, agent.state.y])]
+            lanelet = self.scenario.find_lanelet_by_position(position)[0][0]
+            if lanelet in goal_IDs:
+                agents_in_goal.append(agent_name)
+
+        # Project my position in the goal lane
+        angle = self.orientation
+        if goal_lane_is_right:
+            angle -= np.pi / 2
+        else:
+            angle += np.pi / 2
+
+        my_x_in_goal = current_state.x + project_segment * np.cos(angle)
+        my_y_in_goal = current_state.y + project_segment * np.sin(angle)
+
+        # Find the car in front of the agent
+        distances = {}
+        for agent_name in agents_in_goal:
+            if (agent.state.x > my_x_in_goal and np.cos(self.orientation) > 0) or (
+                agent.state.x < my_x_in_goal and np.cos(self.orientation) < 0
+            ):
+                distances[agent_name] = np.sqrt(
+                    (agent.state.x - my_x_in_goal) ** 2 + (agent.state.y - my_y_in_goal) ** 2
+                )
+        self.closest_car = min(distances, key=distances.get)
+
+        # Compute the acceleration
+        other_car_speed = agents[self.closest_car].state.vx
+        other_car_next_state = other_car_speed * self.dt + agents[self.closest_car].state.x
+        distance_to_cover = other_car_next_state - current_state.x
+        speed_next_state = self._compute_max_speed(distance_to_cover, other_car_speed, current_state.vx)
+        acc = max(min(self.sp.acc_limits[1], (speed_next_state - current_state.vx) / self.dt), self.sp.acc_limits[0])
 
     def cruise_control(self, current_state: VehicleState, init_time: float) -> dict[float, VehicleCommands]:
         # Parameters

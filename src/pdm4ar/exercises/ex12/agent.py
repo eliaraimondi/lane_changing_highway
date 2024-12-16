@@ -82,7 +82,7 @@ class Pdm4arAgent(Agent):
         self.collision_checker = CollisionChecker(self.portion_of_trajectory, self.orientation, self.name)
         self.lane_width = 2 * self.control_points[1].r
         self.controller = Controller(
-            self.scenario, self.sp, self.sg, dt=self.dt, name=self.name, orientation=self.orientation
+            self.scenario, self.sp, self.sg, dt=self.dt, name=self.name, orientation=self.orientation, self.lane_width
         )
         self.goal_ID = self.scenario.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
         self.goal_lanelet = self.scenario.find_lanelet_by_id(self.goal_ID)
@@ -117,7 +117,7 @@ class Pdm4arAgent(Agent):
             )
 
         if self._wall_cars():
-            self.controller.controll_in_wall_cars(current_state, sim_obs)
+            self.controller.control_in_wall_cars(current_state, sim_obs)
 
         # If the trajectory is not started and the time is a mult of 0.3, compute the trajectory
         if not self.trajectory_started and float(sim_obs.time) % 0.3 == 0:
