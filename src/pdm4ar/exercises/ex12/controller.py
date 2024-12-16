@@ -1,9 +1,10 @@
-from dg_commons.sim.models.vehicle import VehicleCommands
 import numpy as np
 import math
 import matplotlib.pyplot as plt
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
+from dg_commons.sim.models.vehicle import VehicleCommands, VehicleState
+import casadi as ca
 
 
 class Controller:
@@ -16,6 +17,8 @@ class Controller:
         self.orientation = orientation
         self.orientations = []
         self.times = []
+        self.cos_theta = np.cos(self.orientation)
+        self.sin_theta = np.sin(self.orientation)
 
     def compute_actual_commands(self, current_state, desired_state) -> VehicleCommands:
         """
@@ -32,42 +35,22 @@ class Controller:
 
         return VehicleCommands(acc=acc, ddelta=ddelta)
 
-    def maintain_lane(self, current_state, sim_obs):
+    def maintain_lane(self, current_state: VehicleState, sim_obs, init: bool = False) -> VehicleCommands:
         """
         This method is called by the simulator to mantein the lane
         :param current_state: the current state of the agent at the current time step
         :param sim_obs: the current observations of the simulator
         :return: the actual commands to be executed
         """
-        my_position = [np.array([current_state.x, current_state.y])]
-        try:
-            my_lanelet = self.scenario.find_lanelet_by_position(my_position)[0][0]
-        except:
-            return VehicleCommands(acc=0, ddelta=0)
-        front_car = None
-
         # Find the car in front of the agent
-        for name, agent in sim_obs.players.items():
-            if name != self.name:
-                agent_position = [np.array([agent.state.x, agent.state.y])]
-
-                # Try to find the lanelet of the agent, if the list is empty continue
-                try:
-                    agent_lanelet = self.scenario.find_lanelet_by_position(agent_position)[0][0]
-                except:
-                    continue
-                if agent_lanelet == my_lanelet and (
-                    (agent.state.x > current_state.x and np.cos(self.orientation) > 0)
-                    or (agent.state.x < current_state.x and np.cos(self.orientation) < 0)
-                ):
-                    front_car = agent
-                    break
-
-        # If there isn't a car in front of the agent set all the commands to 0
+        front_car = self._find_front_car(current_state, sim_obs)
+        max_speed = 25
 
         # Compute the actual acceleration
         if front_car is None:
-            acc = self.sp.acc_limits[1]
+            acc = max(min((max_speed - current_state.vx) / self.dt, self.sp.acc_limits[1]), self.sp.acc_limits[0])
+        elif isinstance(front_car, VehicleCommands):
+            return front_car
         else:
             # Compute the distance to cover
             distance_to_cover = (
@@ -75,14 +58,16 @@ class Controller:
                 - 2 * self.sg.length
             )
             max_speed = self._compute_max_speed(distance_to_cover, front_car.state.vx, current_state.vx)
-
             acc = max(min(self.sp.acc_limits[1], (max_speed - current_state.vx) / self.dt), self.sp.acc_limits[0])
 
-        # Compute the actual ddelta
-        delta_psi = self.orientation - current_state.psi
-        dpsi = delta_psi / self.dt
-        delta = math.atan((self.sg.wheelbase * dpsi) / current_state.vx)
-        ddelta1 = min(self.sp.ddelta_max, (delta - current_state.delta) / self.dt)
+        if not init:
+            # Compute the actual ddelta
+            delta_psi = self.orientation - current_state.psi
+            dpsi = delta_psi / self.dt
+            delta = math.atan((self.sg.wheelbase * dpsi) / current_state.vx)
+            ddelta = min(self.sp.ddelta_max, (delta - current_state.delta) / self.dt)
+        else:
+            ddelta = 0
 
         """# Compute the orientation at the next step
         real_delta = ddelta1 * self.dt + current_state.delta
@@ -105,7 +90,7 @@ class Controller:
         plt.plot(self.times, self.orientations)
         plt.savefig("orientation.png")
 
-        return VehicleCommands(acc=acc, ddelta=ddelta1)
+        return VehicleCommands(acc=acc, ddelta=ddelta)
 
     def _compute_max_speed(self, distance_to_cover: float, speed_goal: float, current_speed: float) -> float:
         """
@@ -117,7 +102,7 @@ class Controller:
         :return: the maximum speed of the agent
         """
         # Consider the maximum speed and dec of the agent
-        max_speed = self.sp.vx_limits[1]
+        max_speed = 25
         max_dec = self.sp.acc_limits[0]
 
         # Compute the distance at the next state considering my current speed and the speed of the car in front
@@ -130,3 +115,188 @@ class Controller:
             speed_at_next_state = 0
 
         return speed_at_next_state
+
+    def _find_front_car(self, current_state: VehicleState, sim_obs):
+        """
+        This function finds the car in front of the agent
+        :param current_state: the current state of the agent at the current time step
+        :param sim_obs: the current observations of the simulator
+        :return: the car in front of the agent, None if there is no car in front
+        """
+        # Find the lanelet of the agent
+        my_position = [np.array([current_state.x, current_state.y])]
+        try:
+            my_lanelet_ID = self.scenario.find_lanelet_by_position(my_position)[0][0]
+        except IndexError:
+            return VehicleCommands(acc=0, ddelta=0)
+
+        # Find the predecessor and the successor of the lanelet
+        my_lanelet_IDs = self.successor_and_predecessor(my_lanelet_ID)
+
+        # Find the car in front of the agent
+        for name, agent in sim_obs.players.items():
+            if name != self.name:
+                agent_position = [np.array([agent.state.x, agent.state.y])]
+
+                # Try to find the lanelet of the agent, if the list is empty continue
+                try:
+                    agent_lanelet = self.scenario.find_lanelet_by_position(agent_position)[0][0]
+                except IndexError:
+                    continue
+                if (agent_lanelet in my_lanelet_IDs) and (
+                    (agent.state.x > current_state.x and np.cos(self.orientation) > 0)
+                    or (agent.state.x < current_state.x and np.cos(self.orientation) < 0)
+                ):
+                    return agent
+
+        # If there is no car in front of the agent, return None
+        return None
+
+    def successor_and_predecessor(self, my_lanelet_ID: float) -> tuple:
+        """
+        This function returns the successor and the predecessor of the goal lanelet
+        :param my_lanelet_ID: the ID of the lanelet of the agent
+        :return: the successor and the predecessor of the goal lanelet
+        """
+        my_lanelet = self.scenario.find_lanelet_by_id(my_lanelet_ID)
+        try:
+            lane_suc_ID = my_lanelet.successor[0]
+        except:
+            lane_suc_ID = None
+        try:
+            lane_pre_ID = my_lanelet.predecessor[0]
+        except:
+            lane_pre_ID = None
+
+        return (lane_suc_ID, lane_pre_ID, my_lanelet_ID)
+
+    def cruise_control(self, current_state: VehicleState, init_time: float) -> dict[float, VehicleCommands]:
+        # Parameters
+        N = 10  # Prediction horizon
+        Q_y = 100.0  # Lane deviation cost weight
+        x_proj = -self.sin_theta
+        y_proj = self.cos_theta
+
+        my_position = [np.array([current_state.x, current_state.y])]
+        try:
+            my_lanelet_ID = self.scenario.find_lanelet_by_position(my_position)[0][0]
+            my_lanelet = self.scenario.find_lanelet_by_id(my_lanelet_ID)
+            x_control_p = my_lanelet.center_vertices[0][0]  # take first control point
+            y_control_p = my_lanelet.center_vertices[0][1]  # ""
+        except IndexError:
+            return {round((i * 0.1) + init_time, 1): VehicleCommands(acc=0, ddelta=0) for i in range(N)}
+
+        # Define the states
+        psi = ca.MX.sym("psi")
+        x = ca.MX.sym("x")
+        y = ca.MX.sym("y")
+        vx = ca.MX.sym("vx")
+        delta = ca.MX.sym("delta")
+        states = ca.vertcat(psi, x, y, vx, delta)
+        n_states = states.size1()
+
+        # Define the controls
+        a = ca.MX.sym("a")
+        ddelta = ca.MX.sym("ddelta")
+        controls = ca.vertcat(a, ddelta)
+        n_controls = controls.size1()
+
+        # Define discretized dynamics
+        dpsi = vx * ca.tan(delta) / self.sg.wheelbase
+        # vy = dpsi * self.sg.lr
+        # costh = ca.cos(psi)
+        # sinth = ca.sin(psi)
+        xdot = vx * ca.cos(psi) - dpsi * self.sg.lr * ca.sin(psi)
+        ydot = vx * ca.sin(psi) + dpsi * self.sg.lr * ca.cos(psi)
+
+        rhs = ca.vertcat(dpsi, xdot, ydot, a, ddelta)
+
+        f = ca.Function("f", [states, controls], [rhs])
+
+        # Optimization problem
+        X = ca.MX.sym("X", n_states, N + 1)
+        U = ca.MX.sym("U", n_controls, N)
+        lane_error = ca.MX.sym("lane_error", 1, N)  # Define lane_position_error: NOTE: starts for X[:, 1]
+
+        P = ca.MX.sym("P", n_states + 1)  # Initial state + psi_desired (column vector)
+
+        obj = 0
+        g = []  # constraints
+
+        for k in range(N):
+            # Cost function
+            obj += Q_y * lane_error[0, k] ** 2  # + Q_psi * psi_error ** 2
+            # obj += R_a * U[0, k] ** 2 + R_delta * X[4, k + 1] ** 2 + R_ddelta * U[1, k] ** 2
+            # Dynamics constraint
+            x_next = X[:, k] + self.dt * f(X[:, k], U[:, k])
+            g.append(X[:, k + 1] - x_next)  # NOTE: each constr is vectorized --> 10 constraints for 50 actual
+
+        # Lane deviation constraint
+        for k in range(N):
+            g.append(x_proj * (X[1, k + 1] - x_control_p) + y_proj * (X[2, k + 1] - y_control_p) - lane_error[k])
+
+        # Initial state
+        g.append(X[:, 0] - P[:n_states])
+
+        # Final Orientation, delta
+        g.append(X[0, N] - P[n_states])
+        g.append(X[4, N])
+
+        # Flatten constraints
+        g = ca.vertcat(*g)
+
+        # Bounds for states and controls
+        lbx = []
+        ubx = []
+
+        for _ in range(N + 1):  # State bounds
+            lbx += [-ca.inf, -ca.inf, -ca.inf, self.sp.vx_limits[0], -self.sp.delta_max]  # [psi, x, y, v, delta]
+            ubx += [ca.inf, ca.inf, ca.inf, self.sp.vx_limits[1], self.sp.delta_max]  # [psi, x, y, v, delta]
+
+        for _ in range(N):  # Control bounds
+            lbx += [self.sp.acc_limits[0], -self.sp.ddelta_max]  # [a, dot_delta]
+            ubx += [self.sp.acc_limits[1], self.sp.ddelta_max]  # [a, dot_delta]
+
+        for _ in range(N):  # Lane deviation bounds
+            lbx += [-ca.inf]
+            ubx += [ca.inf]
+
+        # Pack variables for solver
+        opt_variables = ca.vertcat(
+            ca.reshape(X, -1, 1), ca.reshape(U, -1, 1), ca.reshape(lane_error, -1, 1)
+        )  # column vectors: all states in each instant --> NOTE: ca.reshape follows FORTRAN order!
+
+        # Nonlinear programming problem
+        nlp = {"x": opt_variables, "f": obj, "g": g, "p": P}
+        solver = ca.nlpsol("solver", "ipopt", nlp)
+
+        ## SOLVE
+        # Initial guess
+        x0 = current_state.as_ndarray()  # Initial state [x, y, psi, v, delta]
+        psi0 = x0[2]
+        x0[2] = x0[1]
+        x0[1] = x0[0]
+        x0[0] = psi0  # Initial state [psi, x, y, v, delta]
+        u0 = np.zeros((n_controls, N))  # Initial guess for controls
+        X0 = np.tile(x0, (N + 1, 1)).T  # Initial guess for states
+        lane_error0 = np.array([x_proj * (x0[0] - x_control_p) + y_proj * (x0[1] - y_control_p)])
+        lane_error0 = np.tile(lane_error0, (N, 1)).T
+        # Fill parameter vector
+        p = np.hstack((x0, self.orientation))
+
+        sol = solver(
+            x0=ca.vertcat(ca.reshape(X0, -1, 1), ca.reshape(u0, -1, 1), ca.reshape(lane_error0, -1, 1)),
+            lbx=lbx,
+            ubx=ubx,
+            lbg=0,
+            ubg=0,
+            p=p,
+        )
+
+        # Extract optimal solution
+        opt_X = np.array(sol["x"][: n_states * (N + 1)]).reshape(N + 1, n_states).T
+        opt_U = np.array(sol["x"][n_states * (N + 1) : n_states * (N + 1) + n_controls * N]).reshape(N, n_controls).T
+        opt_lane_error = np.array(sol["x"][n_states * (N + 1) + n_controls * N :]).reshape(1, N)
+        dict = {round((i * 0.1) + init_time, 1): VehicleCommands(acc=opt_U[0, i], ddelta=opt_U[1, i]) for i in range(N)}
+
+        return dict

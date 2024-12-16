@@ -52,7 +52,9 @@ class Pdm4arAgent(Agent):
         self.trajectory_started = False
         self.old_other_speeds = {}
         self.dt = 0.1
-        self.radius_coeff = 2 / 3  # coeff of confidence for the radius, bigger values are more conservative
+        self.radius_coeff = (
+            2 / 3
+        )  # coeff of confidence for the radius, bigger values are more conservative, the smallest one is 1/2
 
         # PID parameters
         # Considering Ku = 1000
@@ -76,13 +78,15 @@ class Pdm4arAgent(Agent):
         # Create a dictionary to store the speeds of other agents
         self.scenario: LaneletNetwork = init_obs.dg_scenario.lanelet_network  # type: ignore
         self.control_points = init_obs.goal.ref_lane.control_points  # type: ignore
-        self.goal_ID = self.scenario.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
         self.orientation = self.goal.ref_lane.control_points[0].q.theta  # type: ignore
         self.collision_checker = CollisionChecker(self.portion_of_trajectory, self.orientation, self.name)
         self.lane_width = 2 * self.control_points[1].r
         self.controller = Controller(
             self.scenario, self.sp, self.sg, dt=self.dt, name=self.name, orientation=self.orientation
         )
+        self.goal_ID = self.scenario.find_lanelet_by_position([self.control_points[1].q.p])[0][0]
+        self.goal_lanelet = self.scenario.find_lanelet_by_id(self.goal_ID)
+        self.goal_IDs = self.controller.successor_and_predecessor(self.goal_ID)
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
         """This method is called by the simulator every dt_commands seconds (0.1s by default).
@@ -112,8 +116,11 @@ class Pdm4arAgent(Agent):
                 self.radius_coeff,
             )
 
-        # If the trajectory is not started, compute the trajectory
-        if not self.trajectory_started:
+        if self._wall_cars():
+            self.controller.controll_in_wall_cars(current_state, sim_obs)
+
+        # If the trajectory is not started and the time is a mult of 0.3, compute the trajectory
+        if not self.trajectory_started and float(sim_obs.time) % 0.3 == 0:
             my_position = [np.array([current_state.x, current_state.y])]
             my_lanelet = self.scenario.find_lanelet_by_position(my_position)[0][0]
 
@@ -178,6 +185,7 @@ class Pdm4arAgent(Agent):
             end_speed = current_state.vx * 3
             if front_on_goal is not None:
                 end_speed = front_on_goal.state.vx  # type: ignore
+            end_speed = current_state.vx
 
             radius = self.dubins_planner.calculate_min_radius(current_state, end_speed)
             print(f"Radius: {radius}")
@@ -219,6 +227,9 @@ class Pdm4arAgent(Agent):
             else:
                 # commands = self.controller.maintain_lane(current_state, sim_obs)
                 return VehicleCommands(acc=0, ddelta=0)
+
+        elif not self.trajectory_started:
+            return VehicleCommands(acc=0, ddelta=0)
 
         # If the trajectory is started compute the commands
         ind = round(float(sim_obs.time) + 0.1, 1)
@@ -315,3 +326,22 @@ class Pdm4arAgent(Agent):
                     )
                     for step in range(numb_of_steps)
                 ]
+
+    def _wall_cars(self, sim_obs) -> bool:
+        """
+        This function checks if there is a lot of cars in the goal lanelet
+        :param sim_obs: the current observations of the simulator
+        :return: True if there are a lot of cars in the goal lanelet, False otherwise
+        """
+        agents_in_goal = []
+        agents = sim_obs.players
+        for agent_name, agent in agents.items():
+            position = [np.array([agent.state.x, agent.state.y])]
+            lanelet = self.scenario.find_lanelet_by_position(position)[0][0]
+            if lanelet in self.goal_IDs:
+                agents_in_goal.append(agent_name)
+
+        if len(agents_in_goal) > 5:
+            return True
+        else:
+            return False

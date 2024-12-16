@@ -125,6 +125,7 @@ class Planner:
             vx=vx,
             delta=0,
         )
+
         self._plot_vehicle_states()
         self._smooth_delta()
 

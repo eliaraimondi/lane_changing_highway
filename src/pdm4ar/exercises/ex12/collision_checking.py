@@ -56,7 +56,7 @@ class CollisionChecker:
                 if my_point.intersects(other_point):
                     collision_indexes[other_name].append(my_points.index(my_point))
 
-        self.plot_trajectories(my_points, other_points_dict)
+        # self.plot_trajectories(my_points, other_points_dict)
 
         return collision_indexes
 
