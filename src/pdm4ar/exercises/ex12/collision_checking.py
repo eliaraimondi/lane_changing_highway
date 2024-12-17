@@ -7,11 +7,11 @@ from matplotlib.animation import FuncAnimation
 
 
 class CollisionChecker:
-    def __init__(self, portion_of_trajectory: float, orientation: float, my_name: str) -> None:
+    def __init__(self, portion_of_trajectory: float, my_name: str) -> None:
         self.geometries = {}
         self.portion_of_trajectory = portion_of_trajectory
         self.my_name = my_name
-        self.orientation = orientation
+        self.orientation = None
 
     def add_other_geometry(self, name, other_geometry):
         self.geometries[name] = other_geometry
@@ -20,6 +20,7 @@ class CollisionChecker:
         self,
         my_positions: list[SE2Transform],
         other_positions_dict: dict[str, list[SE2Transform]],
+        orientation: float,
     ) -> dict[str, list[int]]:
         """
         This function checks if our current trajectory is in collision with other agents' trajectories.
@@ -30,6 +31,8 @@ class CollisionChecker:
         :param portion_of_trajectory: Float indicating the portion of the trajectory to consider for the collision checking
         :return: List of integers indicating the time steps in which a collision occurs
         """
+        self.orientation = orientation
+
         # Check on the lenght of the lists
         if len(my_positions) == 0 or all(
             int(len(my_positions) * self.portion_of_trajectory) != len(other_positions)

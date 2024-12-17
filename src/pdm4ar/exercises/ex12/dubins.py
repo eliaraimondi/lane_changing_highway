@@ -93,7 +93,6 @@ class DubinsPath:
         self,
         init_config: VehicleState,
         end_speed: float,
-        radius: float,
     ) -> dict:
         """
         Calculate the Dubins path with only 2 curves depending on the goal lane
@@ -103,7 +102,8 @@ class DubinsPath:
         goal_lane_is_right: a boolean indicating if the goal lane is on the right side of the car
         lane_width: the width of the lane
         """
-        self.radius = radius
+        self.radius = self.calculate_min_radius(init_config, end_speed)
+        print(f"Radius: {self.radius}")
         start_config = SE2Transform([init_config.x, init_config.y], init_config.psi)
         start_speed = init_config.vx
 
@@ -137,7 +137,7 @@ class DubinsPath:
 
         # Trasform the path into a vehicle state dict
         planner = Planner(path, self.max_acc)
-        states = planner.compute_vehicle_states(start_speed, end_speed, radius, self.wheelbase)
+        states = planner.compute_vehicle_states(start_speed, end_speed, self.radius, self.wheelbase)
 
         return states
 

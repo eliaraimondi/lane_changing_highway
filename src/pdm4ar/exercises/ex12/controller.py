@@ -1,26 +1,25 @@
-from turtle import distance
 import numpy as np
-import math
-import matplotlib.pyplot as plt
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
 from dg_commons.sim.models.vehicle import VehicleCommands, VehicleState
-import casadi as ca
 
 
 class Controller:
-    def __init__(self, scenario, sp: VehicleParameters, sg: VehicleGeometry, dt, name, orientation, lane_width: float):
+    def __init__(self, scenario, sp: VehicleParameters, sg: VehicleGeometry, dt, name, lane_width: float):
         self.dt = dt
         self.scenario = scenario
         self.sp = sp
         self.sg = sg
         self.name = name
-        self.orientation = orientation
-        self.orientations = []
-        self.times = []
-        self.cos_theta = np.cos(self.orientation)
-        self.sin_theta = np.sin(self.orientation)
         self.lane_width = lane_width
+        self.closest_car_name = None
+        self.front_car_name = None
+        self.car_found = False
+        self.orientation = 0
+        self.delta_controller = PIDController(kp=0.75, ki=0, kd=1)
+
+    def set_orientation(self, orientation: float):
+        self.orientation = orientation
 
     def compute_actual_commands(self, current_state, desired_state) -> VehicleCommands:
         """
@@ -37,7 +36,7 @@ class Controller:
 
         return VehicleCommands(acc=acc, ddelta=ddelta)
 
-    def maintain_lane(self, current_state: VehicleState, sim_obs, init: bool = False) -> VehicleCommands:
+    def maintain_lane(self, current_state: VehicleState, sim_obs, control_points: list[np.ndarray]) -> VehicleCommands:
         """
         This method is called by the simulator to mantein the lane
         :param current_state: the current state of the agent at the current time step
@@ -62,35 +61,30 @@ class Controller:
             max_speed = self._compute_max_speed(distance_to_cover, front_car.state.vx, current_state.vx)
             acc = max(min(self.sp.acc_limits[1], (max_speed - current_state.vx) / self.dt), self.sp.acc_limits[0])
 
-        if not init:
-            # Compute the actual ddelta
-            delta_psi = self.orientation - current_state.psi
-            dpsi = delta_psi / self.dt
-            delta = math.atan((self.sg.wheelbase * dpsi) / current_state.vx)
-            ddelta = min(self.sp.ddelta_max, (delta - current_state.delta) / self.dt)
-        else:
-            ddelta = 0
+        modulo = 10 * self.sg.length
+        distances_to_control_points = {}
+        for i in range(len(control_points) - 1):
+            distances_to_control_points[i] = np.sqrt(
+                (current_state.x - control_points[i][0]) ** 2 + (current_state.y - control_points[i][1]) ** 2
+            )
 
-        """# Compute the orientation at the next step
-        real_delta = ddelta1 * self.dt + current_state.delta
-        real_dpsi = current_state.vx * math.tan(real_delta) / self.sg.wheelbase
-        next_psi = real_dpsi * self.dt + current_state.psi
-        next_delta_psi = self.orientation - next_psi
-        next_dpsi = next_delta_psi / self.dt
-        next_delta = math.atan((self.sg.wheelbase * next_dpsi) / (current_state.vx + acc * self.dt))
-        ddelta2 = min(self.sp.ddelta_max, (delta - real_delta) / self.dt)"""
+        min_distance_index = min(distances_to_control_points, key=distances_to_control_points.get)  # type: ignore
+        closest_control_point = control_points[min_distance_index]
 
-        # PID for the delta
-        """error = delta - current_state.delta
-        self.integral_pid += error * self.dt
-        derivative = (error - self.error_previous) / self.dt
-        ddelta = self.Kp * error  # + self.Ki * self.integral_pid + self.Kd * derivative"""
+        x_primo = current_state.x + modulo * np.cos(current_state.psi)
+        y_primo = current_state.y + modulo * np.sin(current_state.psi)
 
-        self.orientations.append(current_state.psi)
-        self.times.append(float(sim_obs.time))
-        plt.figure()
-        plt.plot(self.times, self.orientations)
-        plt.savefig("orientation.png")
+        distance_from_cp = np.cos(self.orientation) * (x_primo - closest_control_point[0]) + np.sin(
+            self.orientation
+        ) * (y_primo - closest_control_point[1])
+
+        x_to_follow = distance_from_cp * np.cos(self.orientation) + closest_control_point[0]
+        y_to_follow = distance_from_cp * np.sin(self.orientation) + closest_control_point[1]
+
+        angle_to_follow = np.arctan2(y_to_follow - current_state.y, x_to_follow - current_state.x)
+        angle_error = current_state.psi - angle_to_follow
+
+        ddelta = self.delta_controller.compute(0, angle_error)
 
         return VehicleCommands(acc=acc, ddelta=ddelta)
 
@@ -116,7 +110,7 @@ class Controller:
                 min(max_speed, np.sqrt(speed_goal**2 - 2 * max_dec * distance)), self.sp.vx_limits[0]
             )
         else:
-            speed_at_next_state = 0
+            speed_at_next_state = speed_goal
 
         return speed_at_next_state
 
@@ -165,18 +159,18 @@ class Controller:
         my_lanelet = self.scenario.find_lanelet_by_id(my_lanelet_ID)
         try:
             lane_suc_ID = my_lanelet.successor[0]
-        except:
+        except IndexError:
             lane_suc_ID = None
         try:
             lane_pre_ID = my_lanelet.predecessor[0]
-        except:
+        except IndexError:
             lane_pre_ID = None
 
         return (lane_suc_ID, lane_pre_ID, my_lanelet_ID)
 
-    def control_in_wall_cars(
-        self, current_state: VehicleState, sim_obs, goal_IDs, goal_lane_is_right: bool
-    ) -> VehicleCommands:
+    def maintain_in_wall_cars(
+        self, current_state: VehicleState, sim_obs, goal_IDs, goal_lane_is_right: bool, control_points: list[np.ndarray]
+    ) -> tuple:
         """
         This method is called by the simulator to mantein the lane in the wall cars condition
         :param current_state: the current state of the agent at the current time step
@@ -203,151 +197,141 @@ class Controller:
         my_x_in_goal = current_state.x + project_segment * np.cos(angle)
         my_y_in_goal = current_state.y + project_segment * np.sin(angle)
 
-        # Find the car in front of the agent
-        distances = {}
-        for agent_name in agents_in_goal:
-            if (agent.state.x > my_x_in_goal and np.cos(self.orientation) > 0) or (
-                agent.state.x < my_x_in_goal and np.cos(self.orientation) < 0
-            ):
-                distances[agent_name] = np.sqrt(
-                    (agent.state.x - my_x_in_goal) ** 2 + (agent.state.y - my_y_in_goal) ** 2
-                )
-        self.closest_car = min(distances, key=distances.get)
+        if self.closest_car_name is None or not (
+            (
+                (agents[self.closest_car_name].state.x + self.sg.length / 2 * np.cos(self.orientation) * 3)
+                > my_x_in_goal
+                and np.cos(self.orientation) > 0
+            )
+            or (
+                (agents[self.closest_car_name].state.x - self.sg.length / 2 * np.cos(self.orientation) * 3)
+                < my_x_in_goal
+                and np.cos(self.orientation) < 0
+            )
+        ):
+            # Find the car in front of the agent
+            distances = {}
+            for agent_name in agents_in_goal:
+                agent = agents[agent_name]
+                if (
+                    (agent.state.x + (self.sg.length / 2 * np.cos(self.orientation))) > my_x_in_goal
+                    and np.cos(self.orientation) > 0
+                ) or (
+                    (agent.state.x - (self.sg.length / 2 * np.cos(self.orientation))) < my_x_in_goal
+                    and np.cos(self.orientation) < 0
+                ):
+                    distances[agent_name] = np.sqrt(
+                        (agent.state.x - my_x_in_goal) ** 2 + (agent.state.y - my_y_in_goal) ** 2
+                    )
+            keys = sorted(distances, key=distances.get)  # type: ignore
+            self.closest_car_name = keys[0]
+            try:
+                self.front_car_name = keys[1]
+            except IndexError:
+                self.front_car_name = None
 
         # Compute the acceleration
-        other_car_speed = agents[self.closest_car].state.vx
-        other_car_next_state = other_car_speed * self.dt + agents[self.closest_car].state.x
-        distance_to_cover = other_car_next_state - current_state.x
-        speed_next_state = self._compute_max_speed(distance_to_cover, other_car_speed, current_state.vx)
-        acc = max(min(self.sp.acc_limits[1], (speed_next_state - current_state.vx) / self.dt), self.sp.acc_limits[0])
+        closest_agent = agents[self.closest_car_name]
+        if (closest_agent.state.x > my_x_in_goal and np.cos(self.orientation) > 0) or (
+            closest_agent.state.x < my_x_in_goal and np.cos(self.orientation) < 0
+        ):
+            distance = np.sqrt(
+                (closest_agent.state.x - my_x_in_goal) ** 2 + (closest_agent.state.y - my_y_in_goal) ** 2
+            )
+        else:
+            distance = -np.sqrt(
+                (closest_agent.state.x - my_x_in_goal) ** 2 + (closest_agent.state.y - my_y_in_goal) ** 2
+            )
+        distance_to_cover = distance + self.sg.length / 2
+        other_speed = closest_agent.state.vx
+        speed_next_state = self._compute_max_speed(distance_to_cover, other_speed, current_state.vx)
 
-    def cruise_control(self, current_state: VehicleState, init_time: float) -> dict[float, VehicleCommands]:
-        # Parameters
-        N = 10  # Prediction horizon
-        Q_y = 100.0  # Lane deviation cost weight
-        x_proj = -self.sin_theta
-        y_proj = self.cos_theta
+        # COMPUTE THE SPEED TO NOT COLLIDE WITH THE CAR IN FRONT
+        # Find the car in front of the agent
+        front_car = self._find_front_car(current_state, sim_obs)
+        max_speed = 25
 
-        my_position = [np.array([current_state.x, current_state.y])]
-        try:
-            my_lanelet_ID = self.scenario.find_lanelet_by_position(my_position)[0][0]
-            my_lanelet = self.scenario.find_lanelet_by_id(my_lanelet_ID)
-            x_control_p = my_lanelet.center_vertices[0][0]  # take first control point
-            y_control_p = my_lanelet.center_vertices[0][1]  # ""
-        except IndexError:
-            return {round((i * 0.1) + init_time, 1): VehicleCommands(acc=0, ddelta=0) for i in range(N)}
+        # Compute the actual acceleration
+        if front_car is None:
+            max_speed_front = max_speed
+        elif isinstance(front_car, VehicleCommands):
+            return front_car, self.closest_car_name, self.front_car_name, distance_to_cover
+        else:
+            # Compute the distance to cover
+            distance_to_cover_front = (
+                np.sqrt((front_car.state.x - current_state.x) ** 2 + (front_car.state.y - current_state.y) ** 2)
+                - self.sg.length
+            )
+            max_speed_front = self._compute_max_speed(distance_to_cover_front, front_car.state.vx, current_state.vx)
 
-        # Define the states
-        psi = ca.MX.sym("psi")
-        x = ca.MX.sym("x")
-        y = ca.MX.sym("y")
-        vx = ca.MX.sym("vx")
-        delta = ca.MX.sym("delta")
-        states = ca.vertcat(psi, x, y, vx, delta)
-        n_states = states.size1()
+        if self.front_car_name is not None:
+            cars_distance = np.sqrt(
+                (agents[self.front_car_name].state.x - agents[self.closest_car_name].state.x) ** 2
+                + (agents[self.front_car_name].state.y - agents[self.closest_car_name].state.y) ** 2
+            )
+        else:
+            cars_distance = 0
 
-        # Define the controls
-        a = ca.MX.sym("a")
-        ddelta = ca.MX.sym("ddelta")
-        controls = ca.vertcat(a, ddelta)
-        n_controls = controls.size1()
+        if cars_distance < 2 * self.sg.length:
+            speed = max_speed_front
+        else:
+            speed = min(speed_next_state, max_speed_front)
 
-        # Define discretized dynamics
-        dpsi = vx * ca.tan(delta) / self.sg.wheelbase
-        # vy = dpsi * self.sg.lr
-        # costh = ca.cos(psi)
-        # sinth = ca.sin(psi)
-        xdot = vx * ca.cos(psi) - dpsi * self.sg.lr * ca.sin(psi)
-        ydot = vx * ca.sin(psi) + dpsi * self.sg.lr * ca.cos(psi)
+        speed = min(speed_next_state, max_speed_front)
 
-        rhs = ca.vertcat(dpsi, xdot, ydot, a, ddelta)
+        acc = max(min(self.sp.acc_limits[1], (speed - current_state.vx) / self.dt), self.sp.acc_limits[0])
 
-        f = ca.Function("f", [states, controls], [rhs])
+        modulo = 10 * self.sg.length
+        distances_to_control_points = {}
+        for i in range(len(control_points) - 1):
+            distances_to_control_points[i] = np.sqrt(
+                (current_state.x - control_points[i][0]) ** 2 + (current_state.y - control_points[i][1]) ** 2
+            )
 
-        # Optimization problem
-        X = ca.MX.sym("X", n_states, N + 1)
-        U = ca.MX.sym("U", n_controls, N)
-        lane_error = ca.MX.sym("lane_error", 1, N)  # Define lane_position_error: NOTE: starts for X[:, 1]
+        min_distance_index = min(distances_to_control_points, key=distances_to_control_points.get)  # type: ignore
+        closest_control_point = control_points[min_distance_index]
 
-        P = ca.MX.sym("P", n_states + 1)  # Initial state + psi_desired (column vector)
+        x_primo = current_state.x + modulo * np.cos(current_state.psi)
+        y_primo = current_state.y + modulo * np.sin(current_state.psi)
 
-        obj = 0
-        g = []  # constraints
+        distance_from_cp = np.cos(self.orientation) * (x_primo - closest_control_point[0]) + np.sin(
+            self.orientation
+        ) * (y_primo - closest_control_point[1])
 
-        for k in range(N):
-            # Cost function
-            obj += Q_y * lane_error[0, k] ** 2  # + Q_psi * psi_error ** 2
-            # obj += R_a * U[0, k] ** 2 + R_delta * X[4, k + 1] ** 2 + R_ddelta * U[1, k] ** 2
-            # Dynamics constraint
-            x_next = X[:, k] + self.dt * f(X[:, k], U[:, k])
-            g.append(X[:, k + 1] - x_next)  # NOTE: each constr is vectorized --> 10 constraints for 50 actual
+        x_to_follow = distance_from_cp * np.cos(self.orientation) + closest_control_point[0]
+        y_to_follow = distance_from_cp * np.sin(self.orientation) + closest_control_point[1]
 
-        # Lane deviation constraint
-        for k in range(N):
-            g.append(x_proj * (X[1, k + 1] - x_control_p) + y_proj * (X[2, k + 1] - y_control_p) - lane_error[k])
+        angle_to_follow = np.arctan2(y_to_follow - current_state.y, x_to_follow - current_state.x)
+        angle_error = current_state.psi - angle_to_follow
 
-        # Initial state
-        g.append(X[:, 0] - P[:n_states])
+        ddelta = self.delta_controller.compute(0, angle_error)
 
-        # Final Orientation, delta
-        g.append(X[0, N] - P[n_states])
-        g.append(X[4, N])
+        commands = VehicleCommands(acc=acc, ddelta=ddelta)
 
-        # Flatten constraints
-        g = ca.vertcat(*g)
+        return commands, self.closest_car_name, cars_distance, distance_to_cover
 
-        # Bounds for states and controls
-        lbx = []
-        ubx = []
 
-        for _ in range(N + 1):  # State bounds
-            lbx += [-ca.inf, -ca.inf, -ca.inf, self.sp.vx_limits[0], -self.sp.delta_max]  # [psi, x, y, v, delta]
-            ubx += [ca.inf, ca.inf, ca.inf, self.sp.vx_limits[1], self.sp.delta_max]  # [psi, x, y, v, delta]
+class PIDController:
+    def __init__(self, kp, ki, kd):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.prev_error = 0
+        self.integral = 0
+        self.max_error = 0
 
-        for _ in range(N):  # Control bounds
-            lbx += [self.sp.acc_limits[0], -self.sp.ddelta_max]  # [a, dot_delta]
-            ubx += [self.sp.acc_limits[1], self.sp.ddelta_max]  # [a, dot_delta]
+    def compute(self, setpoint, measured_value):
+        dt = 0.1
+        error = setpoint - measured_value
+        self.integral += error * dt
+        derivative = (error - self.prev_error) / dt
 
-        for _ in range(N):  # Lane deviation bounds
-            lbx += [-ca.inf]
-            ubx += [ca.inf]
+        output = self.kp * error + self.ki * self.integral + self.kd * derivative
 
-        # Pack variables for solver
-        opt_variables = ca.vertcat(
-            ca.reshape(X, -1, 1), ca.reshape(U, -1, 1), ca.reshape(lane_error, -1, 1)
-        )  # column vectors: all states in each instant --> NOTE: ca.reshape follows FORTRAN order!
+        self.prev_error = error
 
-        # Nonlinear programming problem
-        nlp = {"x": opt_variables, "f": obj, "g": g, "p": P}
-        solver = ca.nlpsol("solver", "ipopt", nlp)
+        if abs(error) > self.max_error:
+            self.max_error = abs(error)
+            print(f"new error: {error}")
 
-        ## SOLVE
-        # Initial guess
-        x0 = current_state.as_ndarray()  # Initial state [x, y, psi, v, delta]
-        psi0 = x0[2]
-        x0[2] = x0[1]
-        x0[1] = x0[0]
-        x0[0] = psi0  # Initial state [psi, x, y, v, delta]
-        u0 = np.zeros((n_controls, N))  # Initial guess for controls
-        X0 = np.tile(x0, (N + 1, 1)).T  # Initial guess for states
-        lane_error0 = np.array([x_proj * (x0[0] - x_control_p) + y_proj * (x0[1] - y_control_p)])
-        lane_error0 = np.tile(lane_error0, (N, 1)).T
-        # Fill parameter vector
-        p = np.hstack((x0, self.orientation))
-
-        sol = solver(
-            x0=ca.vertcat(ca.reshape(X0, -1, 1), ca.reshape(u0, -1, 1), ca.reshape(lane_error0, -1, 1)),
-            lbx=lbx,
-            ubx=ubx,
-            lbg=0,
-            ubg=0,
-            p=p,
-        )
-
-        # Extract optimal solution
-        opt_X = np.array(sol["x"][: n_states * (N + 1)]).reshape(N + 1, n_states).T
-        opt_U = np.array(sol["x"][n_states * (N + 1) : n_states * (N + 1) + n_controls * N]).reshape(N, n_controls).T
-        opt_lane_error = np.array(sol["x"][n_states * (N + 1) + n_controls * N :]).reshape(1, N)
-        dict = {round((i * 0.1) + init_time, 1): VehicleCommands(acc=opt_U[0, i], ddelta=opt_U[1, i]) for i in range(N)}
-
-        return dict
+        return output
