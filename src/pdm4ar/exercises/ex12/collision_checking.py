@@ -38,7 +38,6 @@ class CollisionChecker:
             int(len(my_positions) * self.portion_of_trajectory) != len(other_positions)
             for other_positions in other_positions_dict.values()
         ):
-            print("ERROR! The lists for the positions are empty or have different lengths.")
             return {}
 
         # Create the shapely points buffered for our car and the other agent

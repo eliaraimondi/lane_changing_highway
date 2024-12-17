@@ -126,7 +126,7 @@ class Planner:
             delta=0,
         )
 
-        self._plot_vehicle_states()
+        # self._plot_vehicle_states()
         self._smooth_delta()
 
         return self.new_trajectory

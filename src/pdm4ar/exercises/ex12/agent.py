@@ -120,12 +120,10 @@ class Pdm4arAgent(Agent):
                 self.wall_cars = True
 
         if self.wall_cars and not self.trajectory_started:
-            # self._compute_orientation(current_state)
             commands = self.control_wall_cars(current_state, sim_obs)
 
         # If the trajectory is not started and the time is a mult of 0.3, compute the trajectory
         if not self.wall_cars and not self.trajectory_started and float(sim_obs.time) % 0.3 == 0:
-            # self._compute_orientation(current_state)
 
             ############################################################################################################
             # TRAJECTORY
@@ -264,17 +262,27 @@ class Pdm4arAgent(Agent):
             )
 
         if len(agents_in_goal) > 5 or np.mean(distances_between_cars) < 2 * self.sg.length:
-            print("wall detected")
             return True
         else:
             return False
 
     def control_wall_cars(self, current_state: VehicleState, sim_obs):
         if self.closest_car_name is not None:
-            if (
-                self.cars_distance >= self.sg.length
+            if self.front_car_name is not None:
+                distance = np.linalg.norm(
+                    np.array(
+                        [sim_obs.players[self.front_car_name].state.x, sim_obs.players[self.front_car_name].state.y]
+                    )
+                    - np.array(
+                        [sim_obs.players[self.closest_car_name].state.x, sim_obs.players[self.closest_car_name].state.y]
+                    )
+                )
+            else:
+                distance = np.inf
+            if distance == np.inf or (
+                distance >= self.sg.length
                 and round(current_state.vx - sim_obs.players[self.closest_car_name].state.vx, 1) == 0
-                # and round(self.distance_to_cover, 1) == 0
+                and round(self.distance_to_cover, 1) == 0
             ):
                 trajectory_not_scaled = self.dubins_planner.calculate_dubins_path(current_state, 2 * current_state.vx)
 
@@ -285,26 +293,9 @@ class Pdm4arAgent(Agent):
                 self.trajectory_started = True
                 return VehicleCommands(acc=0, ddelta=0)
 
-        commands, self.closest_car_name, self.cars_distance, self.distance_to_cover = (
+        commands, self.closest_car_name, self.front_car_name, self.distance_to_cover = (
             self.controller.maintain_in_wall_cars(
                 current_state, sim_obs, self.goal_IDs, self.goal_lane_is_right, self.my_control_points
             )
         )
         return commands
-
-    def _compute_orientation(self, current_state):
-        """
-        This function computes the orientation of the road
-        :param sim_obs: the current observations of the simulator
-        :return: the orientation of the road
-        """
-        position = [np.array([current_state.x, current_state.y])]
-        try:
-            lanelet_ID = self.scenario.find_lanelet_by_position(position)[0][0]
-            lanelet = self.scenario.find_lanelet_by_id(lanelet_ID)
-            point1 = lanelet.center_vertices[0]
-            point2 = lanelet.center_vertices[1]
-            self.orientation = np.arctan2(point2[1] - point1[1], point2[0] - point1[0])
-            self.controller.set_orientation(self.orientation)
-        except IndexError:
-            pass

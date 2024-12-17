@@ -103,7 +103,6 @@ class DubinsPath:
         lane_width: the width of the lane
         """
         self.radius = self.calculate_min_radius(init_config, end_speed)
-        print(f"Radius: {self.radius}")
         start_config = SE2Transform([init_config.x, init_config.y], init_config.psi)
         start_speed = init_config.vx
 

@@ -199,12 +199,12 @@ class Controller:
 
         if self.closest_car_name is None or not (
             (
-                (agents[self.closest_car_name].state.x + self.sg.length / 2 * np.cos(self.orientation) * 3)
+                (agents[self.closest_car_name].state.x + self.sg.length / 2 * np.cos(self.orientation) * 1.5)
                 > my_x_in_goal
                 and np.cos(self.orientation) > 0
             )
             or (
-                (agents[self.closest_car_name].state.x - self.sg.length / 2 * np.cos(self.orientation) * 3)
+                (agents[self.closest_car_name].state.x - self.sg.length / 2 * np.cos(self.orientation) * 1.5)
                 < my_x_in_goal
                 and np.cos(self.orientation) < 0
             )
@@ -260,7 +260,7 @@ class Controller:
             # Compute the distance to cover
             distance_to_cover_front = (
                 np.sqrt((front_car.state.x - current_state.x) ** 2 + (front_car.state.y - current_state.y) ** 2)
-                - self.sg.length
+                - 2 * self.sg.length
             )
             max_speed_front = self._compute_max_speed(distance_to_cover_front, front_car.state.vx, current_state.vx)
 
@@ -272,7 +272,7 @@ class Controller:
         else:
             cars_distance = 0
 
-        if cars_distance < 2 * self.sg.length:
+        if cars_distance < self.sg.length:
             speed = max_speed_front
         else:
             speed = min(speed_next_state, max_speed_front)
@@ -308,7 +308,7 @@ class Controller:
 
         commands = VehicleCommands(acc=acc, ddelta=ddelta)
 
-        return commands, self.closest_car_name, cars_distance, distance_to_cover
+        return commands, self.closest_car_name, self.front_car_name, distance_to_cover
 
 
 class PIDController:
@@ -332,6 +332,5 @@ class PIDController:
 
         if abs(error) > self.max_error:
             self.max_error = abs(error)
-            print(f"new error: {error}")
 
         return output
