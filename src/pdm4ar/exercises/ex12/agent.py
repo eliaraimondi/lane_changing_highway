@@ -18,6 +18,7 @@ from .controller import Controller
 from dg_commons import SE2Transform
 import numpy as np
 import math
+import matplotlib.pyplot as plt
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,8 @@ class Pdm4arAgent(Agent):
         self.goal_IDs = self.controller.successor_and_predecessor(self.goal_ID)
 
     def get_commands(self, sim_obs: SimObservations) -> VehicleCommands:
-        """This method is called by the simulator every dt_commands seconds (0.1s by default).
+        """
+        This method is called by the simulator every dt_commands seconds (0.1s by default).
         Do not modify the signature of this method.
 
         For instance, this is how you can get your current state from the observations:
@@ -91,6 +93,9 @@ class Pdm4arAgent(Agent):
         :return:
         """
         current_state: VehicleState = sim_obs.players[self.name].state  # type: ignore
+        if len(sim_obs.players) > 3:
+            print(c)
+        c = 0
 
         try:
             self.my_ID = self.scenario.find_lanelet_by_position([np.array([current_state.x, current_state.y])])[0][0]
@@ -160,9 +165,14 @@ class Pdm4arAgent(Agent):
                 other_positions_dict=self.other_trajectories,
                 orientation=self.orientation,
             )
+            plt.figure()
+            plt.axis("equal")
+            plt.plot([tr.p[0] for tr in trajectory_points], [tr.p[1] for tr in trajectory_points], "r")
+            plt.savefig("trajectory.png")
 
             if all(not lst for lst in agents_collisions.values()):
                 self.trajectory_started = True
+                self.to_follow = trajectory_not_scaled
             else:
                 commands = self.controller.maintain_lane(current_state, sim_obs, self.my_control_points)
 
@@ -171,9 +181,12 @@ class Pdm4arAgent(Agent):
 
         # If the trajectory is started compute the commands
         ind = round(float(sim_obs.time) + 0.1, 1)
-        if self.trajectory_started and list(self.trajectory.keys())[-1] > float(sim_obs.time):
-            commands = self.controller.compute_actual_commands(current_state, self.trajectory[ind])
-        elif self.trajectory_started and list(self.trajectory.keys())[-1] <= float(sim_obs.time):
+        if self.trajectory_started:
+            # commands = self.controller.compute_actual_commands(current_state, self.trajectory[ind])
+            self.trajectory_started, commands = self.controller.closed_loop_control(
+                current_state, self.to_follow, sim_obs
+            )
+        else:
             commands = self.controller.maintain_lane(current_state, sim_obs, self.my_control_points)
 
         return commands
@@ -240,7 +253,6 @@ class Pdm4arAgent(Agent):
         :param sim_obs: the current observations of the simulator
         :return: True if there are a lot of cars in the goal lanelet, False otherwise
         """
-        car_positions = []
         agents_in_goal = []
         agents = sim_obs.players
         for agent_name, agent in agents.items():
@@ -251,17 +263,8 @@ class Pdm4arAgent(Agent):
                 continue
             if lanelet in self.goal_IDs:
                 agents_in_goal.append(agent_name)
-                car_positions.append((agent.state.x, agent.state.y))
-        distances_between_cars = []
-        for i in range(len(car_positions) - 1):
-            distances_between_cars.append(
-                np.linalg.norm(
-                    np.array([car_positions[i][0], car_positions[i][1]])
-                    - np.array([car_positions[i + 1][0], car_positions[i + 1][1]])
-                )
-            )
 
-        if len(agents_in_goal) > 5 or np.mean(distances_between_cars) < 2 * self.sg.length:
+        if len(agents_in_goal) > 4:
             return True
         else:
             return False

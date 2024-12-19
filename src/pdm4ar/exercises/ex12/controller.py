@@ -1,7 +1,11 @@
+from ast import arguments
 import numpy as np
 from dg_commons.sim.models.vehicle_structures import VehicleGeometry
 from dg_commons.sim.models.vehicle_utils import VehicleParameters
 from dg_commons.sim.models.vehicle import VehicleCommands, VehicleState
+from dg_commons import SE2Transform
+
+from pdm4ar.exercises.ex08 import agent
 
 
 class Controller:
@@ -16,7 +20,11 @@ class Controller:
         self.front_car_name = None
         self.car_found = False
         self.orientation = 0
-        self.delta_controller = PIDController(kp=0.75, ki=0, kd=1)
+        self.delta_controller = PIDController(kp=0.95, ki=0, kd=1)
+        self.v_controller = PIDController(kp=1, ki=0, kd=1)
+        self.distance_controller = PIDController(kp=0.75, ki=0, kd=1)
+        self.desired_v = 15
+        self.desired_distance = self.sg.length * 3
 
     def set_orientation(self, orientation: float):
         self.orientation = orientation
@@ -48,18 +56,17 @@ class Controller:
         max_speed = 25
 
         # Compute the actual acceleration
-        if front_car is None:
-            acc = max(min((max_speed - current_state.vx) / self.dt, self.sp.acc_limits[1]), self.sp.acc_limits[0])
-        elif isinstance(front_car, VehicleCommands):
-            return front_car
-        else:
-            # Compute the distance to cover
-            distance_to_cover = (
-                np.sqrt((front_car.state.x - current_state.x) ** 2 + (front_car.state.y - current_state.y) ** 2)
-                - 2 * self.sg.length
+        if front_car:
+            current_distance = np.sqrt(
+                (current_state.x - front_car.state.x) ** 2 + (current_state.y - front_car.state.y) ** 2
             )
-            max_speed = self._compute_max_speed(distance_to_cover, front_car.state.vx, current_state.vx)
-            acc = max(min(self.sp.acc_limits[1], (max_speed - current_state.vx) / self.dt), self.sp.acc_limits[0])
+            error = self.desired_distance - current_distance
+            acc = self.distance_controller.compute(0, error)
+            print(f"distance: {current_distance}, error: {error}, acc: {acc}")
+        else:
+            error = current_state.vx - self.desired_v
+            acc = self.v_controller.compute(0, error)
+            print(f"speed: {current_state.vx}, error: {error}, acc: {acc}")
 
         modulo = 10 * self.sg.length
         distances_to_control_points = {}
@@ -309,6 +316,58 @@ class Controller:
         commands = VehicleCommands(acc=acc, ddelta=ddelta)
 
         return commands, self.closest_car_name, self.front_car_name, distance_to_cover
+
+    def closed_loop_control(self, current_state: VehicleState, trajectory: dict, sim_obs) -> (VehicleCommands, flag):
+        """
+        This function computes the commands for the car to follow the trajectory during the dubins
+        :param current_state: the current state of the car
+        :param trajectory: the trajectory to follow
+        :param sim_obs: the current observations of the simulator
+        :return: the commands for the car
+        """
+        distances_to_point = {}
+        modulo = 10 * self.sg.length
+        for i, point in enumerate(trajectory.values()):
+            index = float(round(i * 0.1, 1))
+            distances_to_point[index] = np.sqrt((point.x - current_state.x) ** 2 + (point.y - current_state.y) ** 2)
+            trajectory[index].distance = distances_to_point[index]
+        first_min_index = min(distances_to_point, key=distances_to_point.get)  # type: ignore
+        distances_to_point.pop(first_min_index)
+        second_min_index = min(distances_to_point, key=distances_to_point.get)  # type: ignore
+
+        first_point = trajectory[first_min_index]
+        second_point = trajectory[second_min_index]
+
+        if first_point.distance > 0.0001:
+            tangent_angle = (
+                first_point.psi * (1 / first_point.distance) + second_point.psi * (1 / second_point.distance)
+            ) / ((1 / first_point.distance) + (1 / second_point.distance))
+        else:
+            tangent_angle = first_point.psi
+
+        x_primo = current_state.x + modulo * np.cos(current_state.psi)
+        y_primo = current_state.y + modulo * np.sin(current_state.psi)
+
+        distance_from_cp = np.cos(tangent_angle) * (x_primo - first_point.x) + np.sin(tangent_angle) * (
+            y_primo - first_point.y
+        )
+
+        x_to_follow = distance_from_cp * np.cos(tangent_angle) + first_point.x
+        y_to_follow = distance_from_cp * np.sin(tangent_angle) + first_point.y
+
+        angle_to_follow = np.arctan2(y_to_follow - current_state.y, x_to_follow - current_state.x)
+        angle_error = current_state.psi - angle_to_follow
+
+        ddelta = self.delta_controller.compute(0, angle_error)
+
+        commands = VehicleCommands(acc=0, ddelta=ddelta)
+
+        flag = True
+
+        if int(first_min_index * 10) == len(trajectory.values()):
+            flag = False
+
+        return commands, flag
 
 
 class PIDController:

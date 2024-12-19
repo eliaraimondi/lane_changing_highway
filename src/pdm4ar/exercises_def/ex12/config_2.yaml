@@ -8,7 +8,7 @@ testcases:
       original_name: P19
       goal_lane_id: 29
     others:
-      names: [P4, P10, P15, P18, P21]
+      names: [P4, P10, P15, P18, P21, P22, P23, P24]
     description: "scenario1"
 
   -
@@ -18,7 +18,7 @@ testcases:
       original_name: P14
       goal_lane_id: 7
     others:
-      names: [P7, P10, P13, P17, P18, P19, P21]
+      names: [P7, P10, P13, P17, P18, P19, P21, P22, P23, P24]
     description: "scenario2"
 
 
